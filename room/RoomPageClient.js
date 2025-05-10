@@ -344,7 +344,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import style from './RoomPage.module.css';
-import socket from '@/utils/socket';
+import socket from '../utils/socket'; 
 
 export default function RoomPage() {
   const searchParams = useSearchParams();
