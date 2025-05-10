@@ -349,6 +349,7 @@ import socket from '@/utils/socket';
 export default function RoomPage() {
   const searchParams = useSearchParams();
   const name = searchParams.get('name') || '';
+  
   const roomId = searchParams.get('roomId') || '';
   const role = searchParams.get('role') || 'participant';
 
