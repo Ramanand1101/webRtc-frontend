@@ -19,6 +19,8 @@ export default function RoomPage() {
   const peerConnectionsRef = useRef({});
   // Object to store all remote video elements
   const remoteVideosRef = useRef({});
+  // Track video mute state
+  const [isVideoOn, setIsVideoOn] = useState(true);
 
   const [participants, setParticipants] = useState([]);
   const [chatMessages, setChatMessages] = useState([]);
@@ -33,11 +35,14 @@ export default function RoomPage() {
     if (!roomId || !name) return;
 
     const ICE_SERVERS = {
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+      ],
     };
 
     // Function to create a peer connection for a specific user
-    const createPeerConnection = (socketId) => {
+    const createPeerConnection = (socketId, participantName) => {
       const peerConnection = new RTCPeerConnection(ICE_SERVERS);
       peerConnectionsRef.current[socketId] = peerConnection;
 
@@ -58,9 +63,8 @@ export default function RoomPage() {
           videoBlock.className = style.videoBlock;
           videoBlock.id = `video-block-${socketId}`;
           
-          const participantName = participants.find(p => p.socketId === socketId)?.name || 'Remote User';
           const nameHeading = document.createElement('h3');
-          nameHeading.textContent = participantName;
+          nameHeading.textContent = participantName || 'Remote User';
           
           videoBlock.appendChild(nameHeading);
           videoBlock.appendChild(videoElement);
@@ -70,8 +74,9 @@ export default function RoomPage() {
 
       // Handle incoming tracks from the remote peer
       peerConnection.ontrack = (event) => {
+        console.log('Received track from', socketId, event.track.kind);
         const videoElement = remoteVideosRef.current[socketId];
-        if (videoElement) {
+        if (videoElement && event.streams[0]) {
           videoElement.srcObject = event.streams[0];
         }
       };
@@ -86,9 +91,15 @@ export default function RoomPage() {
         }
       };
 
+      // Handle connection state changes
+      peerConnection.onconnectionstatechange = () => {
+        console.log(`Peer connection state for ${socketId}:`, peerConnection.connectionState);
+      };
+
       // Add local tracks to the peer connection
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach((track) => {
+          console.log('Adding local track to peer connection:', track.kind);
           peerConnection.addTrack(track, localStreamRef.current);
         });
       }
@@ -116,10 +127,17 @@ export default function RoomPage() {
 
     const start = async () => {
       try {
-        // Get local media stream
+        // Get local media stream with explicit audio constraints
         const mediaConstraints = {
-          video: true,
-          audio: true,
+          video: {
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          },
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          }
         };
         
         const localStream = await navigator.mediaDevices.getUserMedia(mediaConstraints);
@@ -130,39 +148,48 @@ export default function RoomPage() {
           localVideoRef.current.srcObject = localStream;
         }
 
+        // Log audio tracks to verify they exist
+        console.log('Local audio tracks:', localStream.getAudioTracks());
+        console.log('Local video tracks:', localStream.getVideoTracks());
+
         // Join the room
         socket.emit('join-room', { roomId, userId: name, role });
 
         // Handle existing users in the room
-        socket.on('all-users', (users) => {
+        socket.on('all-users', async (users) => {
           console.log('All users in room:', users);
           setParticipants(users);
           
           // Create peer connections for each existing user
-          users.forEach(async (user) => {
-            const { socketId } = user;
+          for (const user of users) {
+            const { socketId, name: userName } = user;
+            console.log(`Creating connection for ${userName} (${socketId})`);
             
             // Create a peer connection for this user
-            const peerConnection = createPeerConnection(socketId);
+            const peerConnection = createPeerConnection(socketId, userName);
             
-            // Create and send an offer
-            const offer = await peerConnection.createOffer();
-            await peerConnection.setLocalDescription(offer);
-            
-            socket.emit('send-offer', {
-              to: socketId,
-              offer: peerConnection.localDescription,
-            });
-          });
+            try {
+              // Create and send an offer
+              const offer = await peerConnection.createOffer({
+                offerToReceiveAudio: true,
+                offerToReceiveVideo: true
+              });
+              await peerConnection.setLocalDescription(offer);
+              
+              socket.emit('send-offer', {
+                to: socketId,
+                offer: peerConnection.localDescription,
+              });
+            } catch (error) {
+              console.error('Error creating offer:', error);
+            }
+          }
         });
 
         // Handle new user connections
-        socket.on('user-connected', async ({ socketId, name: newName }) => {
+        socket.on('user-connected', ({ socketId, name: newName }) => {
           console.log(`New user connected: ${newName} (${socketId})`);
-          
           setParticipants((prev) => [...prev, { socketId, name: newName }]);
-          
-          // No need to create a peer connection here, we'll wait for the offer
         });
 
         // Handle user disconnections
@@ -176,16 +203,25 @@ export default function RoomPage() {
         socket.on('receive-offer', async ({ offer, from }) => {
           console.log(`Received offer from: ${from}`);
           
-          const peerConnection = createPeerConnection(from);
+          // Get the sender's name from participants
+          const senderName = participants.find(p => p.socketId === from)?.name || 'Remote User';
+          const peerConnection = createPeerConnection(from, senderName);
           
-          await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
-          const answer = await peerConnection.createAnswer();
-          await peerConnection.setLocalDescription(answer);
-          
-          socket.emit('send-answer', {
-            to: from,
-            answer: peerConnection.localDescription,
-          });
+          try {
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+            const answer = await peerConnection.createAnswer({
+              offerToReceiveAudio: true,
+              offerToReceiveVideo: true
+            });
+            await peerConnection.setLocalDescription(answer);
+            
+            socket.emit('send-answer', {
+              to: from,
+              answer: peerConnection.localDescription,
+            });
+          } catch (error) {
+            console.error('Error handling offer:', error);
+          }
         });
 
         // Handle incoming answers
@@ -194,7 +230,11 @@ export default function RoomPage() {
           
           const peerConnection = peerConnectionsRef.current[from];
           if (peerConnection) {
-            await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+            try {
+              await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+            } catch (error) {
+              console.error('Error setting remote description:', error);
+            }
           }
         });
 
@@ -202,7 +242,11 @@ export default function RoomPage() {
         socket.on('receive-ice-candidate', async ({ candidate, from }) => {
           const peerConnection = peerConnectionsRef.current[from];
           if (peerConnection) {
-            await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+            try {
+              await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+            } catch (error) {
+              console.error('Error adding ICE candidate:', error);
+            }
           }
         });
 
@@ -217,6 +261,7 @@ export default function RoomPage() {
         });
       } catch (err) {
         console.error('Media access error:', err);
+        alert('Failed to access camera/microphone. Please check permissions.');
       }
     };
 
@@ -233,8 +278,10 @@ export default function RoomPage() {
         localStreamRef.current.getTracks().forEach((track) => track.stop());
       }
       
-      // Disconnect socket
-      socket.disconnect();
+      // Leave the room before disconnecting
+      socket.emit('leave-room', { roomId });
+      
+      // Disconnect socket and remove all listeners
       socket.off('all-users');
       socket.off('user-connected');
       socket.off('user-disconnected');
@@ -243,6 +290,7 @@ export default function RoomPage() {
       socket.off('receive-ice-candidate');
       socket.off('receive-chat');
       socket.off('chat-permission-updated');
+      socket.disconnect();
     };
   }, [roomId, name, role]);
 
@@ -259,7 +307,7 @@ export default function RoomPage() {
       return;
     }
 
-    // Toggle each audio track (usually there's only one)
+    // Toggle each audio track
     audioTracks.forEach((track) => {
       track.enabled = !track.enabled;
       console.log(`Mic toggled: ${track.label} -> ${track.enabled ? 'enabled' : 'disabled'}`);
@@ -279,6 +327,8 @@ export default function RoomPage() {
     videoTracks.forEach(track => {
       track.enabled = !track.enabled;
     });
+
+    setIsVideoOn(!isVideoOn);
   };
 
   const sendMessage = () => {
@@ -344,40 +394,16 @@ export default function RoomPage() {
 
   const shareScreen = async () => {
     try {
-      const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-      const videoTrack = screenStream.getVideoTracks()[0];
-      
-      // Replace the video track in all peer connections
-      Object.values(peerConnectionsRef.current).forEach((pc) => {
-        const senders = pc.getSenders();
-        const videoSender = senders.find((s) => s.track && s.track.kind === 'video');
-        if (videoSender) {
-          videoSender.replaceTrack(videoTrack);
-        }
-      });
-      
-      // Update local video display
-      if (localVideoRef.current) {
-        // Create a new stream that combines screen sharing video with original audio
-        const newStream = new MediaStream();
-        newStream.addTrack(videoTrack);
-        
-        // Add audio tracks from the original stream
-        if (localStreamRef.current) {
-          localStreamRef.current.getAudioTracks().forEach(track => {
-            newStream.addTrack(track);
-          });
-        }
-        
-        localVideoRef.current.srcObject = newStream;
-      }
-      
-      setIsSharingScreen(true);
-      
-      // Handle track ending (user stops screen share)
-      videoTrack.onended = async () => {
-        // Get a new camera stream
-        const cameraStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      if (isSharingScreen) {
+        // Stop screen sharing and revert to camera
+        const cameraStream = await navigator.mediaDevices.getUserMedia({ 
+          video: true, 
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          } 
+        });
         const cameraVideoTrack = cameraStream.getVideoTracks()[0];
         
         // Replace the track in all peer connections
@@ -398,8 +424,74 @@ export default function RoomPage() {
         localStreamRef.current = cameraStream;
         
         setIsSharingScreen(false);
-      };
-      
+      } else {
+        // Start screen sharing
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({ 
+          video: true,
+          audio: false 
+        });
+        const videoTrack = screenStream.getVideoTracks()[0];
+        
+        // Replace the video track in all peer connections
+        Object.values(peerConnectionsRef.current).forEach((pc) => {
+          const senders = pc.getSenders();
+          const videoSender = senders.find((s) => s.track && s.track.kind === 'video');
+          if (videoSender) {
+            videoSender.replaceTrack(videoTrack);
+          }
+        });
+        
+        // Update local video display
+        if (localVideoRef.current) {
+          // Create a new stream that combines screen sharing video with original audio
+          const newStream = new MediaStream();
+          newStream.addTrack(videoTrack);
+          
+          // Add audio tracks from the original stream
+          if (localStreamRef.current) {
+            localStreamRef.current.getAudioTracks().forEach(track => {
+              newStream.addTrack(track);
+            });
+          }
+          
+          localVideoRef.current.srcObject = newStream;
+        }
+        
+        setIsSharingScreen(true);
+        
+        // Handle track ending (user stops screen share)
+        videoTrack.onended = async () => {
+          // Get a new camera stream
+          const cameraStream = await navigator.mediaDevices.getUserMedia({ 
+            video: true, 
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true
+            }
+          });
+          const cameraVideoTrack = cameraStream.getVideoTracks()[0];
+          
+          // Replace the track in all peer connections
+          Object.values(peerConnectionsRef.current).forEach((pc) => {
+            const senders = pc.getSenders();
+            const videoSender = senders.find((s) => s.track && s.track.kind === 'video');
+            if (videoSender) {
+              videoSender.replaceTrack(cameraVideoTrack);
+            }
+          });
+          
+          // Update local video
+          if (localVideoRef.current) {
+            localVideoRef.current.srcObject = cameraStream;
+          }
+          
+          // Update the reference to the current stream
+          localStreamRef.current = cameraStream;
+          
+          setIsSharingScreen(false);
+        };
+      }
     } catch (error) {
       console.error('Screen share error:', error);
     }
@@ -432,9 +524,9 @@ export default function RoomPage() {
 
           <button
             onClick={toggleVideo}
-            className={`${style.button} ${style.blueButton}`}
+            className={`${style.button} ${isVideoOn ? style.activeButton : style.blueButton}`}
           >
-            Toggle Video
+            {isVideoOn ? 'Turn Off Video' : 'Turn On Video'}
           </button>
 
           <button
