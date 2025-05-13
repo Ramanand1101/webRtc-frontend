@@ -344,12 +344,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import style from './RoomPage.module.css';
-import socket from '../utils/socket'; 
+import socket from '../utils/socket';
 
 export default function RoomPage() {
   const searchParams = useSearchParams();
   const name = searchParams.get('name') || '';
-  
   const roomId = searchParams.get('roomId') || '';
   const role = searchParams.get('role') || 'participant';
 
@@ -367,6 +366,7 @@ export default function RoomPage() {
   const [chatTarget, setChatTarget] = useState('all');
   const [isRecording, setIsRecording] = useState(false);
   const [isSharingScreen, setIsSharingScreen] = useState(false);
+  const [isMicOn, setIsMicOn] = useState(true);
 
   useEffect(() => {
     if (!roomId || !name || !role) return;
@@ -444,6 +444,19 @@ export default function RoomPage() {
           targetSocketRef.current = from;
           createPeerConnection();
 
+          const localStream = await navigator.mediaDevices.getUserMedia({
+            audio: true,
+          });
+          currentStreamRef.current = localStream;
+
+          localStream.getTracks().forEach((track) =>
+            peerConnectionRef.current.addTrack(track, localStream)
+          );
+
+          if (localVideoRef.current) {
+            localVideoRef.current.srcObject = localStream;
+          }
+
           await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(offer));
           const answer = await peerConnectionRef.current.createAnswer();
           await peerConnectionRef.current.setLocalDescription(answer);
@@ -490,6 +503,29 @@ export default function RoomPage() {
       socket.off('chat-permission-updated');
     };
   }, [roomId, name, role]);
+
+  const toggleMic = () => {
+  const stream = currentStreamRef.current;
+  if (!stream) {
+    console.warn('No stream available to toggle mic.');
+    return;
+  }
+
+  const audioTracks = stream.getAudioTracks();
+  if (audioTracks.length === 0) {
+    console.warn('No audio tracks found in the stream.');
+    return;
+  }
+
+  // Toggle each audio track (usually there's only one)
+  audioTracks.forEach((track) => {
+    track.enabled = !track.enabled;
+    console.log(`Mic toggled: ${track.label} -> ${track.enabled ? 'enabled' : 'disabled'}`);
+  });
+
+  // Update state based on the first track
+  setIsMicOn(audioTracks[0].enabled);
+};
 
   const sendMessage = () => {
     if (!message.trim()) return;
@@ -617,6 +653,13 @@ export default function RoomPage() {
             className={`${style.button} ${style.greenButton}`}
           >
             {isSharingScreen ? 'Sharing...' : 'Share Screen'}
+          </button>
+
+          <button
+            onClick={toggleMic}
+            className={`${style.button} ${style.yellowButton}`}
+          >
+            {isMicOn ? 'Mute Mic' : 'Unmute Mic'}
           </button>
         </div>
       )}

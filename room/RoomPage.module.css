@@ -4,7 +4,9 @@
   background-color: #f3f4f6;
   color: #111827;
 }
-
+.yellowButton{
+  background-color: #fbbf24;
+}
 .heading {
   font-size: 1.75rem;
   font-weight: bold;
