@@ -38,11 +38,18 @@ export default function RoomPage() {
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
+        // Add a public TURN server as backup
+        {
+          urls: 'turn:openrelay.metered.ca:80',
+          username: 'openrelayproject',
+          credential: 'openrelayproject',
+        },
       ],
     };
 
     // Function to create a peer connection for a specific user
-    const createPeerConnection = (socketId, participantName) => {
+    const createPeerConnection = (socketId, participantName = 'Remote User') => {
+      console.log(`Creating peer connection for ${participantName} (${socketId})`);
       const peerConnection = new RTCPeerConnection(ICE_SERVERS);
       peerConnectionsRef.current[socketId] = peerConnection;
 
@@ -64,7 +71,8 @@ export default function RoomPage() {
           videoBlock.id = `video-block-${socketId}`;
           
           const nameHeading = document.createElement('h3');
-          nameHeading.textContent = participantName || 'Remote User';
+          nameHeading.textContent = participantName;
+          nameHeading.id = `name-${socketId}`;
           
           videoBlock.appendChild(nameHeading);
           videoBlock.appendChild(videoElement);
@@ -74,18 +82,20 @@ export default function RoomPage() {
 
       // Handle incoming tracks from the remote peer
       peerConnection.ontrack = (event) => {
-        console.log('Received track from', socketId, event.track.kind);
+        console.log('Received track from', socketId, event.track.kind, event.streams[0]);
         const videoElement = remoteVideosRef.current[socketId];
         if (videoElement && event.streams[0]) {
           videoElement.srcObject = event.streams[0];
+          console.log(`Set srcObject for ${socketId}`, event.streams[0].getTracks());
         }
       };
 
       // Handle ICE candidates
       peerConnection.onicecandidate = (event) => {
         if (event.candidate) {
-          socket.emit('send-ice-candidate', {
-            to: socketId,
+          console.log('Sending ICE candidate to', socketId);
+          socket.emit('ice-candidate', {
+            targetSocketId: socketId,
             candidate: event.candidate,
           });
         }
@@ -96,11 +106,17 @@ export default function RoomPage() {
         console.log(`Peer connection state for ${socketId}:`, peerConnection.connectionState);
       };
 
+      // Handle ICE connection state changes
+      peerConnection.oniceconnectionstatechange = () => {
+        console.log(`ICE connection state for ${socketId}:`, peerConnection.iceConnectionState);
+      };
+
       // Add local tracks to the peer connection
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach((track) => {
-          console.log('Adding local track to peer connection:', track.kind);
-          peerConnection.addTrack(track, localStreamRef.current);
+          console.log(`Adding ${track.kind} track to peer connection for ${socketId}`);
+          const sender = peerConnection.addTrack(track, localStreamRef.current);
+          console.log('Added track sender:', sender);
         });
       }
 
@@ -130,21 +146,47 @@ export default function RoomPage() {
         // Get local media stream with explicit audio constraints
         const mediaConstraints = {
           video: {
-            width: { ideal: 1280 },
-            height: { ideal: 720 }
+            width: { ideal: 640 },
+            height: { ideal: 480 }
           },
           audio: {
             echoCancellation: true,
             noiseSuppression: true,
-            autoGainControl: true
+            autoGainControl: true,
+            sampleRate: 44100
           }
         };
         
-        const localStream = await navigator.mediaDevices.getUserMedia(mediaConstraints);
+        // Try to get user media with better error handling
+        let localStream;
+        try {
+          localStream = await navigator.mediaDevices.getUserMedia(mediaConstraints);
+        } catch (firstError) {
+          console.warn('Failed to get video and audio, trying audio only:', firstError);
+          
+          // If video fails, try audio only
+          if (firstError.name === 'NotReadableError' || firstError.name === 'NotFoundError') {
+            try {
+              localStream = await navigator.mediaDevices.getUserMedia({ 
+                video: false, 
+                audio: mediaConstraints.audio 
+              });
+              console.log('Got audio-only stream');
+              alert('Camera access failed. Using audio only.');
+            } catch (audioError) {
+              console.error('Failed to get even audio:', audioError);
+              alert('Failed to access camera and microphone. Please check if they are in use by another application.');
+              return;
+            }
+          } else {
+            throw firstError;
+          }
+        }
+        
         localStreamRef.current = localStream;
 
         // Display local video
-        if (localVideoRef.current) {
+        if (localVideoRef.current && localStream.getVideoTracks().length > 0) {
           localVideoRef.current.srcObject = localStream;
         }
 
@@ -153,59 +195,104 @@ export default function RoomPage() {
         console.log('Local video tracks:', localStream.getVideoTracks());
 
         // Join the room
+        console.log('Joining room:', roomId, 'as', name, 'with role', role);
         socket.emit('join-room', { roomId, userId: name, role });
 
-        // Handle existing users in the room
-        socket.on('all-users', async (users) => {
-          console.log('All users in room:', users);
-          setParticipants(users);
+        // Handle host info (for participants)
+        socket.on('host-info', ({ socketId }) => {
+          console.log('Received host info:', socketId);
           
-          // Create peer connections for each existing user
-          for (const user of users) {
-            const { socketId, name: userName } = user;
-            console.log(`Creating connection for ${userName} (${socketId})`);
-            
-            // Create a peer connection for this user
-            const peerConnection = createPeerConnection(socketId, userName);
-            
-            try {
-              // Create and send an offer
-              const offer = await peerConnection.createOffer({
-                offerToReceiveAudio: true,
-                offerToReceiveVideo: true
-              });
-              await peerConnection.setLocalDescription(offer);
+          // If we're a participant, initiate connection to host
+          if (role === 'participant' && socketId) {
+            setTimeout(async () => {
+              console.log('Creating connection to host:', socketId);
+              const peerConnection = createPeerConnection(socketId, 'Host');
               
-              socket.emit('send-offer', {
-                to: socketId,
-                offer: peerConnection.localDescription,
-              });
-            } catch (error) {
-              console.error('Error creating offer:', error);
-            }
+              try {
+                const offer = await peerConnection.createOffer({
+                  offerToReceiveAudio: true,
+                  offerToReceiveVideo: true
+                });
+                await peerConnection.setLocalDescription(offer);
+                
+                console.log('Sending offer to host:', socketId);
+                socket.emit('offer', {
+                  targetSocketId: socketId,
+                  offer: offer
+                });
+              } catch (error) {
+                console.error('Error creating offer to host:', error);
+              }
+            }, 1000); // Small delay to ensure everything is set up
           }
         });
 
         // Handle new user connections
-        socket.on('user-connected', ({ socketId, name: newName }) => {
-          console.log(`New user connected: ${newName} (${socketId})`);
-          setParticipants((prev) => [...prev, { socketId, name: newName }]);
+        socket.on('user-connected', async (data) => {
+          // Handle both object and string data formats
+          const userData = typeof data === 'object' ? data : { socketId: data, name: data };
+          const { socketId, name: userName } = userData;
+          
+          if (!socketId || socketId === socket.id) return; // Don't connect to ourselves
+          
+          console.log(`New user connected: ${userName} (${socketId})`);
+          
+          // Update participants list
+          setParticipants((prev) => {
+            if (prev.some(p => p.socketId === socketId)) {
+              return prev;
+            }
+            return [...prev, { socketId, name: userName }];
+          });
+          
+          // Update the name in the DOM if the element already exists
+          const nameElement = document.getElementById(`name-${socketId}`);
+          if (nameElement) {
+            nameElement.textContent = userName;
+          }
+          
+          // For participant-to-participant connections
+          if (role === 'participant') {
+            // Create connection to other participants
+            setTimeout(async () => {
+              console.log('Creating connection to participant:', socketId);
+              const peerConnection = createPeerConnection(socketId, userName);
+              
+              try {
+                const offer = await peerConnection.createOffer({
+                  offerToReceiveAudio: true,
+                  offerToReceiveVideo: true
+                });
+                await peerConnection.setLocalDescription(offer);
+                
+                console.log('Sending offer to participant:', socketId);
+                socket.emit('offer', {
+                  targetSocketId: socketId,
+                  offer: offer
+                });
+              } catch (error) {
+                console.error('Error creating offer to participant:', error);
+              }
+            }, 1500); // Delay to ensure everything is set up
+          } else if (role === 'host') {
+            // Host waits for offers from participants
+            console.log('As host, waiting for offer from participant:', socketId);
+          }
         });
 
-        // Handle user disconnections
-        socket.on('user-disconnected', (socketId) => {
-          console.log(`User disconnected: ${socketId}`);
-          setParticipants((prev) => prev.filter((p) => p.socketId !== socketId));
-          removePeerConnection(socketId);
+        // Handle participant list updates (for host)
+        socket.on('participant-list', (participantList) => {
+          console.log('Updated participant list:', participantList);
+          setParticipants(participantList.map(p => ({ socketId: p.socketId, name: p.name })));
         });
 
         // Handle incoming offers
-        socket.on('receive-offer', async ({ offer, from }) => {
-          console.log(`Received offer from: ${from}`);
+        socket.on('offer', async ({ senderSocketId, offer }) => {
+          console.log(`Received offer from: ${senderSocketId}`);
           
-          // Get the sender's name from participants
-          const senderName = participants.find(p => p.socketId === from)?.name || 'Remote User';
-          const peerConnection = createPeerConnection(from, senderName);
+          // Find the sender's name from participants
+          const senderName = participants.find(p => p.socketId === senderSocketId)?.name || 'Participant';
+          const peerConnection = createPeerConnection(senderSocketId, senderName);
           
           try {
             await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
@@ -215,9 +302,10 @@ export default function RoomPage() {
             });
             await peerConnection.setLocalDescription(answer);
             
-            socket.emit('send-answer', {
-              to: from,
-              answer: peerConnection.localDescription,
+            console.log('Sending answer to', senderSocketId);
+            socket.emit('answer', {
+              targetSocketId: senderSocketId,
+              answer: answer
             });
           } catch (error) {
             console.error('Error handling offer:', error);
@@ -225,10 +313,10 @@ export default function RoomPage() {
         });
 
         // Handle incoming answers
-        socket.on('receive-answer', async ({ answer, from }) => {
-          console.log(`Received answer from: ${from}`);
+        socket.on('answer', async ({ senderSocketId, answer }) => {
+          console.log(`Received answer from: ${senderSocketId}`);
           
-          const peerConnection = peerConnectionsRef.current[from];
+          const peerConnection = peerConnectionsRef.current[senderSocketId];
           if (peerConnection) {
             try {
               await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
@@ -239,9 +327,10 @@ export default function RoomPage() {
         });
 
         // Handle incoming ICE candidates
-        socket.on('receive-ice-candidate', async ({ candidate, from }) => {
-          const peerConnection = peerConnectionsRef.current[from];
-          if (peerConnection) {
+        socket.on('ice-candidate', async ({ senderSocketId, candidate }) => {
+          console.log('Received ICE candidate from', senderSocketId);
+          const peerConnection = peerConnectionsRef.current[senderSocketId];
+          if (peerConnection && candidate) {
             try {
               await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
             } catch (error) {
@@ -259,9 +348,44 @@ export default function RoomPage() {
         socket.on('chat-permission-updated', ({ enabled }) => {
           setChatEnabled(enabled);
         });
+
+        // Handle disconnect
+        socket.on('user-disconnected', (socketId) => {
+          console.log(`User disconnected: ${socketId}`);
+          setParticipants((prev) => prev.filter((p) => p.socketId !== socketId));
+          removePeerConnection(socketId);
+        });
+
+        socket.on('host-disconnected', () => {
+          console.log('Host disconnected');
+          alert('The host has left the room. The meeting has ended.');
+          window.location.href = '/';
+        });
+
+        // Handle mute/unmute events
+        socket.on('muted', () => {
+          console.log('You have been muted by the host');
+          setIsMicOn(false);
+          if (localStreamRef.current) {
+            localStreamRef.current.getAudioTracks().forEach(track => {
+              track.enabled = false;
+            });
+          }
+        });
+
+        socket.on('unmuted', () => {
+          console.log('You have been unmuted by the host');
+          setIsMicOn(true);
+          if (localStreamRef.current) {
+            localStreamRef.current.getAudioTracks().forEach(track => {
+              track.enabled = true;
+            });
+          }
+        });
+
       } catch (err) {
         console.error('Media access error:', err);
-        alert('Failed to access camera/microphone. Please check permissions.');
+        alert('Failed to access camera/microphone. Please check permissions and make sure you are using HTTPS.');
       }
     };
 
@@ -278,18 +402,20 @@ export default function RoomPage() {
         localStreamRef.current.getTracks().forEach((track) => track.stop());
       }
       
-      // Leave the room before disconnecting
-      socket.emit('leave-room', { roomId });
-      
-      // Disconnect socket and remove all listeners
-      socket.off('all-users');
+      // Remove all socket listeners
+      socket.off('host-info');
       socket.off('user-connected');
-      socket.off('user-disconnected');
-      socket.off('receive-offer');
-      socket.off('receive-answer');
-      socket.off('receive-ice-candidate');
+      socket.off('participant-list');
+      socket.off('offer');
+      socket.off('answer');
+      socket.off('ice-candidate');
       socket.off('receive-chat');
       socket.off('chat-permission-updated');
+      socket.off('user-disconnected');
+      socket.off('host-disconnected');
+      socket.off('muted');
+      socket.off('unmuted');
+      
       socket.disconnect();
     };
   }, [roomId, name, role]);
@@ -342,7 +468,9 @@ export default function RoomPage() {
   };
 
   const toggleChat = () => {
-    socket.emit('toggle-chat', { roomId, enabled: !chatEnabled });
+    if (role === 'host') {
+      socket.emit('toggle-chat', { roomId, enabled: !chatEnabled });
+    }
   };
 
   const startRecording = () => {
@@ -497,6 +625,19 @@ export default function RoomPage() {
     }
   };
 
+  // Mute/unmute other participants (for host only)
+  const muteParticipant = (targetSocketId) => {
+    if (role === 'host') {
+      socket.emit('mute-user', { roomId, targetSocketId });
+    }
+  };
+
+  const unmuteParticipant = (targetSocketId) => {
+    if (role === 'host') {
+      socket.emit('unmute-user', { roomId, targetSocketId });
+    }
+  };
+
   return (
     <div className={style.container}>
       <h2 className={style.heading}>Room: {roomId}</h2>
@@ -603,6 +744,22 @@ export default function RoomPage() {
           {participants.map((p) => (
             <div key={p.socketId} className={style.participant}>
               {p.name}
+              {role === 'host' && (
+                <div className={style.participantControls}>
+                  <button 
+                    onClick={() => muteParticipant(p.socketId)}
+                    className={style.miniButton}
+                  >
+                    Mute
+                  </button>
+                  <button 
+                    onClick={() => unmuteParticipant(p.socketId)}
+                    className={style.miniButton}
+                  >
+                    Unmute
+                  </button>
+                </div>
+              )}
             </div>
           ))}
         </div>

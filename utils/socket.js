@@ -7,7 +7,7 @@ const getSocket = () => {
   if (!socket) {
     // Connect to your Socket.IO server
     //"https://webrtc-backend-goxe.onrender.com"
-    socket = io("https://webrtc-backend-goxe.onrender.com/" , {
+    socket = io("http://localhost:5000/" , {
       reconnectionDelayMax: 10000,
       transports: ["websocket"],
     });
