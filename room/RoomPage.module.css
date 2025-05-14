@@ -183,7 +183,27 @@
   border-radius: 4px;
   cursor: pointer;
 }
+.videoPlaceholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%; /* or set a fixed height like 240px */
+  background-color: #f0f0f0;
+  border-radius: 8px;
+  text-align: center;
+}
 
+.videoPlaceholder p {
+  margin-top: 8px;
+  font-size: 14px;
+  color: #666;
+}
+
+.avatar {
+  border-radius: 30%;
+  object-fit: cover;
+}
 .participantList {
   background-color: #f9f9f9;
   border-radius: 8px;

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import style from './RoomPage.module.css';
 import socket from '../utils/socket';
+  import Image from 'next/image';
 
 function VideoBox({ stream, name }) {
   const videoRef = useRef(null);
@@ -21,7 +22,6 @@ function VideoBox({ stream, name }) {
 
     const handleInactive = () => {
       setIsVideoActive(false);
-      video.srcObject = null;
     };
 
     const handleActive = () => {
@@ -50,7 +50,10 @@ function VideoBox({ stream, name }) {
       {isVideoActive ? (
         <video ref={videoRef} autoPlay playsInline className={style.video} />
       ) : (
-        <div className={style.videoPlaceholder}>Camera Off</div>
+        <div className={style.videoPlaceholder}>
+          <Image src="/switch-off.png" alt="Avatar" width={64} height={64} className={style.avatar} />
+          <p>Camera Off</p>
+          </div>
       )}
     </div>
   );
@@ -68,10 +71,6 @@ export default function RoomPage() {
 
   const [remoteStreams, setRemoteStreams] = useState({});
   const [participants, setParticipants] = useState([]);
-  // const [chatMessages, setChatMessages] = useState([]);
-  // const [chatEnabled, setChatEnabled] = useState(false);
-  // const [message, setMessage] = useState('');
-  // const [chatTarget, setChatTarget] = useState('all');
   const [isMicMuted, setIsMicMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
 
@@ -91,7 +90,9 @@ export default function RoomPage() {
 
       pc.ontrack = (event) => {
         const stream = event.streams[0];
-        setRemoteStreams((prev) => ({ ...prev, [peerId]: stream }));
+        setRemoteStreams((prev) => {
+          return { ...prev, [peerId]: stream };
+        });
       };
 
       streamRef.current.getTracks().forEach((track) => {
@@ -110,6 +111,11 @@ export default function RoomPage() {
       setParticipants([{ socketId: socket.id, name }]);
 
       socket.on('all-users', async (users) => {
+        setParticipants((prev) => {
+          const newUsers = users.filter((u) => !prev.find((p) => p.socketId === u.socketId));
+          return [...prev, ...newUsers];
+        });
+
         for (const { socketId } of users) {
           const pc = createPeer(socketId);
           peersRef.current.set(socketId, pc);
@@ -149,14 +155,6 @@ export default function RoomPage() {
         if (pc) pc.addIceCandidate(new RTCIceCandidate(candidate));
       });
 
-      socket.on('receive-chat', (chat) => {
-        setChatMessages((prev) => [...prev, chat]);
-      });
-
-      socket.on('chat-permission-updated', ({ enabled }) => {
-        setChatEnabled(enabled);
-      });
-
       socket.on('user-disconnected', (socketId) => {
         const pc = peersRef.current.get(socketId);
         if (pc) pc.close();
@@ -190,8 +188,6 @@ export default function RoomPage() {
         'receive-offer',
         'receive-answer',
         'receive-ice-candidate',
-        'receive-chat',
-        'chat-permission-updated',
         'user-disconnected',
         'screen-share-started',
         'screen-share-stopped',
@@ -203,16 +199,6 @@ export default function RoomPage() {
     };
   }, [roomId, name, role]);
 
-  // const sendMessage = () => {
-  //   if (!message.trim()) return;
-  //   socket.emit('send-chat', {
-  //     roomId,
-  //     message,
-  //     to: chatTarget === 'all' ? null : chatTarget,
-  //   });
-  //   setMessage('');
-  // };
-
   const toggleOwnMic = () => {
     const audioTracks = streamRef.current?.getAudioTracks();
     if (audioTracks && audioTracks.length > 0) {
@@ -222,38 +208,34 @@ export default function RoomPage() {
     }
   };
 
-const toggleOwnVideo = async () => {
-  const videoTracks = streamRef.current?.getVideoTracks();
-  if (!videoTracks || videoTracks.length === 0) return;
+  const toggleOwnVideo = async () => {
+    const videoTracks = streamRef.current?.getVideoTracks();
+    if (!videoTracks || videoTracks.length === 0) return;
 
-  if (!isVideoOff) {
-    // Stop video completely (turns off flashlight)
-    videoTracks.forEach((track) => track.stop());
-    localVideoRef.current.srcObject = null;
-    setIsVideoOff(true);
-  } else {
-    // Restart video
-    const newStream = await navigator.mediaDevices.getUserMedia({ video: true });
-    const newTrack = newStream.getVideoTracks()[0];
+    if (!isVideoOff) {
+      videoTracks.forEach((track) => track.stop());
+      if (localVideoRef.current) localVideoRef.current.srcObject = new MediaStream();
+      setIsVideoOff(true);
+    } else {
+      const newStream = await navigator.mediaDevices.getUserMedia({ video: true });
+      const newTrack = newStream.getVideoTracks()[0];
 
-    // Replace track in peer connections
-    peersRef.current.forEach((pc) => {
-      const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
-      if (sender) sender.replaceTrack(newTrack);
-    });
+      streamRef.current.addTrack(newTrack);
+      peersRef.current.forEach((pc) => {
+        const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
+        if (sender) sender.replaceTrack(newTrack);
+      });
 
-    streamRef.current.addTrack(newTrack);
+      localVideoRef.current.srcObject = new MediaStream([
+        ...streamRef.current.getAudioTracks(),
+        newTrack,
+      ]);
+      setIsVideoOff(false);
+       window.location.reload();
 
-    // Update local preview
-    const updatedStream = new MediaStream([
-      ...streamRef.current.getAudioTracks(),
-      newTrack,
-    ]);
-    localVideoRef.current.srcObject = updatedStream;
-
-    setIsVideoOff(false);
-  }
-};
+      // Force re-offer to all peers to refresh video
+    }
+  };
 
   const shareScreen = async () => {
     try {
@@ -263,7 +245,6 @@ const toggleOwnVideo = async () => {
         socket.emit('screen-share-stopped');
       };
 
-      // Replace video track in all peer connections
       peersRef.current.forEach((pc) => {
         const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
         if (sender) sender.replaceTrack(screenTrack);
@@ -292,9 +273,9 @@ const toggleOwnVideo = async () => {
           <button onClick={shareScreen} className={style.button}>
             Share Screen
           </button>
-           <button onClick={toggleOwnVideo} className={style.button}>
-           {isVideoOff ? 'Turn On Camera' : 'Turn Off Camera'}
-         </button>
+          <button onClick={toggleOwnVideo} className={style.button}>
+            {isVideoOff ? 'Turn On Camera' : 'Turn Off Camera'}
+          </button>
         </div>
 
         {Object.entries(remoteStreams).map(([id, stream]) => (
@@ -305,42 +286,6 @@ const toggleOwnVideo = async () => {
           />
         ))}
       </div>
-
-      {/* {chatEnabled && (
-        <div className={style.chatBox}>
-          <h4>Chat</h4>
-          <div className={style.chatMessages}>
-            {chatMessages.map((msg, i) => (
-              <div key={i}>
-                <strong>{msg.from}:</strong> {msg.message}
-              </div>
-            ))}
-          </div>
-          <div className={style.chatInputArea}>
-            <select
-              value={chatTarget}
-              onChange={(e) => setChatTarget(e.target.value)}
-              className={style.chatTargetSelect}
-            >
-              <option value="all">All</option>
-              {participants.map((p) => (
-                <option key={p.socketId} value={p.socketId}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-            <input
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
-              placeholder="Type a message"
-              className={style.chatInput}
-            />
-            <button onClick={sendMessage} className={style.sendButton}>
-              Send
-            </button>
-          </div>
-        </div>
-      )} */}
     </div>
   );
 }
