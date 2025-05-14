@@ -41,6 +41,7 @@ export default function RoomPage() {
   const roomId = searchParams.get('roomId') || '';
   const role = searchParams.get('role') || 'participant';
 
+  const localVideoRef = useRef(null);
   const streamRef = useRef(null);
   const peersRef = useRef(new Map());
 
@@ -124,14 +125,12 @@ export default function RoomPage() {
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
 
       streamRef.current = stream;
+      if (localVideoRef.current && !localVideoRef.current.srcObject) {
+        localVideoRef.current.srcObject = stream;
+      }
 
       socket.emit('join-room', { roomId, userId: name, role });
-
       setParticipants([{ socketId: socket.id, name }]);
-      setRemoteStreams((prev) => ({
-        ...prev,
-        [socket.id]: stream, // ✅ Add host stream as remote too
-      }));
 
       socket.on('all-users', async (users) => {
         setParticipants((prev) => {
@@ -149,21 +148,21 @@ export default function RoomPage() {
         }
       });
 
-      socket.on('user-connected', async ({ socketId, name }) => {
-        setParticipants((prev) => {
-          if (prev.find((p) => p.socketId === socketId)) return prev;
-          return [...prev, { socketId, name }];
-        });
+ socket.on('user-connected', async ({ socketId, name }) => {
+  setParticipants((prev) => {
+    if (prev.find((p) => p.socketId === socketId)) return prev;
+    return [...prev, { socketId, name }];
+  });
 
-        if (role === 'host') {
-          const pc = createPeer(socketId);
-          peersRef.current.set(socketId, pc);
-
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          socket.emit('send-offer', { to: socketId, offer });
-        }
-      });
+  if (role === 'host' && streamRef.current) {
+    const pc = createPeer(socketId); // ✅ Reuse the existing function that adds tracks & handlers
+  peersRef.current.set(socketId, pc);
+    // Create and send offer
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    socket.emit('send-offer', { to: socketId, offer });
+  }
+});
 
       socket.on('receive-offer', async ({ offer, from }) => {
         const pc = createPeer(from);
@@ -243,19 +242,13 @@ export default function RoomPage() {
         if (sender) sender.replaceTrack(newTrack);
       });
 
-      setRemoteStreams((prev) => ({
-        ...prev,
-        [socket.id]: new MediaStream([
-          ...streamRef.current.getAudioTracks(),
-          newTrack,
-        ]),
-      }));
+      localVideoRef.current.srcObject = new MediaStream([
+        ...streamRef.current.getAudioTracks(),
+        newTrack,
+      ]);
     } else {
       videoTracks.forEach((track) => track.stop());
-      setRemoteStreams((prev) => ({
-        ...prev,
-        [socket.id]: new MediaStream(), // camera off
-      }));
+      localVideoRef.current.srcObject = new MediaStream();
     }
 
     setIsVideoOff(newState);
@@ -278,10 +271,7 @@ export default function RoomPage() {
       screenTrack.onended = () => {
         const videoTrack = streamRef.current.getVideoTracks()[0];
         const audioTrack = streamRef.current.getAudioTracks()[0];
-        setRemoteStreams((prev) => ({
-          ...prev,
-          [socket.id]: new MediaStream([audioTrack, videoTrack]),
-        }));
+        localVideoRef.current.srcObject = new MediaStream([audioTrack, videoTrack]);
 
         peersRef.current.forEach((pc) => {
           const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
@@ -296,11 +286,7 @@ export default function RoomPage() {
         if (sender) sender.replaceTrack(screenTrack);
       });
 
-      setRemoteStreams((prev) => ({
-        ...prev,
-        [socket.id]: screenStream,
-      }));
-
+      localVideoRef.current.srcObject = screenStream;
       socket.emit('screen-share-started');
     } catch (err) {
       console.error('❌ Failed to share screen:', err);
@@ -312,31 +298,33 @@ export default function RoomPage() {
       <h2 className={style.heading}>Room: {roomId}</h2>
 
       <div className={style.videoGrid}>
+        <div className={style.videoBlock}>
+          <h3>You</h3>
+          <video ref={localVideoRef} autoPlay muted playsInline className={style.video} />
+          <button onClick={toggleOwnMic} className={style.button}>
+            {isMicMuted ? 'Unmute Mic' : 'Mute Mic'}
+          </button>
+          {role === 'host' && (
+            <>
+              <button onClick={shareScreen} className={style.button}>Share Screen</button>
+              <button onClick={toggleOwnVideo} className={style.button}>
+                {isVideoOff ? 'Turn On Camera' : 'Turn Off Camera'}
+              </button>
+            </>
+          )}
+        </div>
+
         {Object.entries(remoteStreams).map(([id, stream]) => {
           const participant = participants.find((p) => p.socketId === id);
           return (
             <VideoBox
               key={id}
               stream={stream}
-              name={participant?.name || 'Participant'}
+              name={participant?.name || 'Remote'}
               isCameraOff={participant?.isCameraOff}
             />
           );
         })}
-      </div>
-
-      <div className={style.controls}>
-        <button onClick={toggleOwnMic} className={style.button}>
-          {isMicMuted ? 'Unmute Mic' : 'Mute Mic'}
-        </button>
-        {role === 'host' && (
-          <>
-            <button onClick={shareScreen} className={style.button}>Share Screen</button>
-            <button onClick={toggleOwnVideo} className={style.button}>
-              {isVideoOff ? 'Turn On Camera' : 'Turn Off Camera'}
-            </button>
-          </>
-        )}
       </div>
 
       {role === 'host' && (
