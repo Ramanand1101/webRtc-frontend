@@ -5,6 +5,57 @@ import { useSearchParams } from 'next/navigation';
 import style from './RoomPage.module.css';
 import socket from '../utils/socket';
 
+function VideoBox({ stream, name }) {
+  const videoRef = useRef(null);
+  const [isVideoActive, setIsVideoActive] = useState(true);
+
+  useEffect(() => {
+    if (videoRef.current && stream) {
+      videoRef.current.srcObject = stream;
+    }
+  }, [stream]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const handleInactive = () => {
+      setIsVideoActive(false);
+      video.srcObject = null;
+    };
+
+    const handleActive = () => {
+      setIsVideoActive(true);
+      if (video && stream) video.srcObject = stream;
+    };
+
+    stream?.getTracks().forEach((track) => {
+      track.onended = handleInactive;
+      track.onmute = handleInactive;
+      track.onunmute = handleActive;
+    });
+
+    return () => {
+      stream?.getTracks().forEach((track) => {
+        track.onended = null;
+        track.onmute = null;
+        track.onunmute = null;
+      });
+    };
+  }, [stream]);
+
+  return (
+    <div className={style.videoBlock}>
+      <h3>{name}</h3>
+      {isVideoActive ? (
+        <video ref={videoRef} autoPlay playsInline className={style.video} />
+      ) : (
+        <div className={style.videoPlaceholder}>Camera Off</div>
+      )}
+    </div>
+  );
+}
+
 export default function RoomPage() {
   const searchParams = useSearchParams();
   const name = searchParams.get('name') || '';
@@ -17,10 +68,12 @@ export default function RoomPage() {
 
   const [remoteStreams, setRemoteStreams] = useState({});
   const [participants, setParticipants] = useState([]);
-  const [chatMessages, setChatMessages] = useState([]);
-  const [chatEnabled, setChatEnabled] = useState(false);
-  const [message, setMessage] = useState('');
-  const [chatTarget, setChatTarget] = useState('all');
+  // const [chatMessages, setChatMessages] = useState([]);
+  // const [chatEnabled, setChatEnabled] = useState(false);
+  // const [message, setMessage] = useState('');
+  // const [chatTarget, setChatTarget] = useState('all');
+  const [isMicMuted, setIsMicMuted] = useState(false);
+  const [isVideoOff, setIsVideoOff] = useState(false);
 
   useEffect(() => {
     if (!roomId || !name || !role) return;
@@ -37,7 +90,8 @@ export default function RoomPage() {
       };
 
       pc.ontrack = (event) => {
-        setRemoteStreams((prev) => ({ ...prev, [peerId]: event.streams[0] }));
+        const stream = event.streams[0];
+        setRemoteStreams((prev) => ({ ...prev, [peerId]: stream }));
       };
 
       streamRef.current.getTracks().forEach((track) => {
@@ -53,6 +107,7 @@ export default function RoomPage() {
       streamRef.current = stream;
 
       socket.emit('join-room', { roomId, userId: name, role });
+      setParticipants([{ socketId: socket.id, name }]);
 
       socket.on('all-users', async (users) => {
         for (const { socketId } of users) {
@@ -67,7 +122,10 @@ export default function RoomPage() {
       });
 
       socket.on('user-connected', ({ socketId, name }) => {
-        setParticipants((prev) => [...prev, { socketId, name }]);
+        setParticipants((prev) => {
+          if (prev.find((p) => p.socketId === socketId)) return prev;
+          return [...prev, { socketId, name }];
+        });
       });
 
       socket.on('receive-offer', async ({ offer, from }) => {
@@ -110,6 +168,16 @@ export default function RoomPage() {
         });
         setParticipants((prev) => prev.filter((p) => p.socketId !== socketId));
       });
+
+      socket.on('screen-share-started', () => {
+        const { userId, roomId } = socket.data || {};
+        console.log(`📺 ${userId} started screen sharing in room ${roomId}`);
+      });
+
+      socket.on('screen-share-stopped', () => {
+        const { userId, roomId } = socket.data || {};
+        console.log(`🛑 ${userId} stopped screen sharing in room ${roomId}`);
+      });
     };
 
     start();
@@ -125,6 +193,8 @@ export default function RoomPage() {
         'receive-chat',
         'chat-permission-updated',
         'user-disconnected',
+        'screen-share-started',
+        'screen-share-stopped',
       ].forEach((event) => socket.off(event));
 
       streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -133,14 +203,80 @@ export default function RoomPage() {
     };
   }, [roomId, name, role]);
 
-  const sendMessage = () => {
-    if (!message.trim()) return;
-    socket.emit('send-chat', {
-      roomId,
-      message,
-      to: chatTarget === 'all' ? null : chatTarget,
+  // const sendMessage = () => {
+  //   if (!message.trim()) return;
+  //   socket.emit('send-chat', {
+  //     roomId,
+  //     message,
+  //     to: chatTarget === 'all' ? null : chatTarget,
+  //   });
+  //   setMessage('');
+  // };
+
+  const toggleOwnMic = () => {
+    const audioTracks = streamRef.current?.getAudioTracks();
+    if (audioTracks && audioTracks.length > 0) {
+      const newMutedState = !isMicMuted;
+      audioTracks.forEach((track) => (track.enabled = !newMutedState));
+      setIsMicMuted(newMutedState);
+    }
+  };
+
+const toggleOwnVideo = async () => {
+  const videoTracks = streamRef.current?.getVideoTracks();
+  if (!videoTracks || videoTracks.length === 0) return;
+
+  if (!isVideoOff) {
+    // Stop video completely (turns off flashlight)
+    videoTracks.forEach((track) => track.stop());
+    localVideoRef.current.srcObject = null;
+    setIsVideoOff(true);
+  } else {
+    // Restart video
+    const newStream = await navigator.mediaDevices.getUserMedia({ video: true });
+    const newTrack = newStream.getVideoTracks()[0];
+
+    // Replace track in peer connections
+    peersRef.current.forEach((pc) => {
+      const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
+      if (sender) sender.replaceTrack(newTrack);
     });
-    setMessage('');
+
+    streamRef.current.addTrack(newTrack);
+
+    // Update local preview
+    const updatedStream = new MediaStream([
+      ...streamRef.current.getAudioTracks(),
+      newTrack,
+    ]);
+    localVideoRef.current.srcObject = updatedStream;
+
+    setIsVideoOff(false);
+  }
+};
+
+  const shareScreen = async () => {
+    try {
+      const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      const screenTrack = screenStream.getVideoTracks()[0];
+      screenTrack.onended = () => {
+        socket.emit('screen-share-stopped');
+      };
+
+      // Replace video track in all peer connections
+      peersRef.current.forEach((pc) => {
+        const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
+        if (sender) sender.replaceTrack(screenTrack);
+      });
+
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = screenStream;
+      }
+
+      socket.emit('screen-share-started');
+    } catch (err) {
+      console.error('Failed to share screen:', err);
+    }
   };
 
   return (
@@ -150,24 +286,27 @@ export default function RoomPage() {
         <div className={style.videoBlock}>
           <h3>You</h3>
           <video ref={localVideoRef} autoPlay muted playsInline className={style.video} />
+          <button onClick={toggleOwnMic} className={style.button}>
+            {isMicMuted ? 'Unmute Mic' : 'Mute Mic'}
+          </button>
+          <button onClick={shareScreen} className={style.button}>
+            Share Screen
+          </button>
+           <button onClick={toggleOwnVideo} className={style.button}>
+           {isVideoOff ? 'Turn On Camera' : 'Turn Off Camera'}
+         </button>
         </div>
 
         {Object.entries(remoteStreams).map(([id, stream]) => (
-          <div key={id} className={style.videoBlock}>
-            <h3>Remote</h3>
-            <video
-              autoPlay
-              playsInline
-              className={style.video}
-              ref={(video) => {
-                if (video && stream) video.srcObject = stream;
-              }}
-            />
-          </div>
+          <VideoBox
+            key={id}
+            stream={stream}
+            name={participants.find((p) => p.socketId === id)?.name || 'Remote'}
+          />
         ))}
       </div>
 
-      {chatEnabled && (
+      {/* {chatEnabled && (
         <div className={style.chatBox}>
           <h4>Chat</h4>
           <div className={style.chatMessages}>
@@ -201,7 +340,7 @@ export default function RoomPage() {
             </button>
           </div>
         </div>
-      )}
+      )} */}
     </div>
   );
 }
