@@ -4,9 +4,9 @@ let socket;
 
 const getSocket = () => {
   if (!socket) {
-    //socket = io("http://localhost:5000", {
+    socket = io("http://localhost:5000", {
     //socket = io("https://webrtc-backend-goxe.onrender.com/", {
-    socket = io("https://64.23.228.28:5000/", {
+    //socket = io("http://64.23.228.28:5000/", {
       autoConnect: false,
       reconnectionDelayMax: 10000,
       transports: ["websocket"],
