@@ -49,6 +49,8 @@ export default function RoomPage() {
   const [participants, setParticipants] = useState([]);
   const [isMicMuted, setIsMicMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
+  const [isSharingScreen, setIsSharingScreen] = useState(false);
+ const [hasLeft, setHasLeft] = useState(false);
 
   useEffect(() => {
     socket.on('user-camera-toggle', ({ userId, isCameraOff }) => {
@@ -121,7 +123,7 @@ export default function RoomPage() {
     };
 
     const start = async () => {
-      const constraints = role === 'host' ? { video: true, audio: true } : { video: false, audio: true };
+      const constraints = role === 'host' ? { video: true, audio: true } : { video: true, audio: true };
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
 
       streamRef.current = stream;
@@ -155,8 +157,25 @@ export default function RoomPage() {
   });
 
   if (role === 'host' && streamRef.current) {
-    const pc = createPeer(socketId); // ✅ Reuse the existing function that adds tracks & handlers
-  peersRef.current.set(socketId, pc);
+    const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+
+    // Handle ICE candidates
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        socket.emit('send-ice-candidate', { to: socketId, candidate: event.candidate });
+      }
+    };
+
+    // Add host's live tracks
+    streamRef.current.getTracks().forEach((track) => {
+      if (track.readyState === 'live') {
+        pc.addTrack(track, streamRef.current);
+      }
+    });
+
+    // Save peer connection
+    peersRef.current.set(socketId, pc);
+
     // Create and send offer
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
@@ -213,7 +232,7 @@ export default function RoomPage() {
 
       streamRef.current?.getTracks().forEach((t) => t.stop());
       peersRef.current.forEach((pc) => pc.close());
-      peersRef.current.clear();
+      
     };
   }, [roomId, name, role]);
 
@@ -254,6 +273,45 @@ export default function RoomPage() {
     setIsVideoOff(newState);
     socket.emit('camera-toggle', { roomId, userId: name, isCameraOff: newState });
   };
+const stopScreenShare = async () => {
+  try {
+    // 1. Stop the screen track
+    const screenTrack = localVideoRef.current?.srcObject?.getVideoTracks()[0];
+    if (screenTrack?.kind === 'video') {
+      screenTrack.stop(); // This triggers onended
+    }
+
+    // 2. Restart camera
+    const cameraStream = await navigator.mediaDevices.getUserMedia({ video: true });
+    const newVideoTrack = cameraStream.getVideoTracks()[0];
+    const audioTrack = streamRef.current.getAudioTracks()[0];
+
+    const newCombinedStream = new MediaStream([audioTrack, newVideoTrack]);
+
+    // 3. Update local video and peer tracks
+    localVideoRef.current.srcObject = newCombinedStream;
+    streamRef.current = newCombinedStream;
+
+    peersRef.current.forEach((pc) => {
+      const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
+      if (sender) sender.replaceTrack(newVideoTrack);
+    });
+
+    // ✅ Notify others screen sharing has stopped
+    socket.emit('screen-share-stopped');
+
+    // 4. Update state
+    setIsSharingScreen(false);
+    setParticipants((prev) =>
+      prev.map((p) =>
+        p.socketId === socket.id ? { ...p, isSharingScreen: false } : p
+      )
+    );
+  } catch (err) {
+    console.error('❌ Error while stopping screen share and restoring camera:', err);
+  }
+};
+
 
   const shareScreen = async () => {
     if (role !== 'host') {
@@ -262,23 +320,39 @@ export default function RoomPage() {
       await actuallyShareScreen();
     }
   };
+const leaveRoom = () => {
+  setHasLeft(true);
 
+  streamRef.current?.getTracks().forEach((track) => track.stop());
+  peersRef.current.forEach((pc) => pc.close());
+  peersRef.current.clear();
+
+  socket.emit('leave-room', { roomId, userId: name });
+  socket.disconnect();
+
+  // Optional: redirect or show exit screen
+  window.location.href = '/'; // Change to desired route
+};
   const actuallyShareScreen = async () => {
     try {
       const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
       const screenTrack = screenStream.getVideoTracks()[0];
+      setIsSharingScreen(true); // ← Added here
 
       screenTrack.onended = () => {
         const videoTrack = streamRef.current.getVideoTracks()[0];
         const audioTrack = streamRef.current.getAudioTracks()[0];
+        
         localVideoRef.current.srcObject = new MediaStream([audioTrack, videoTrack]);
 
         peersRef.current.forEach((pc) => {
           const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
           if (sender && videoTrack) sender.replaceTrack(videoTrack);
         });
+        setIsSharingScreen(false);
 
         socket.emit('screen-share-stopped');
+        
       };
 
       peersRef.current.forEach((pc) => {
@@ -294,51 +368,56 @@ export default function RoomPage() {
   };
 
   return (
-    <div className={style.container}>
-      <h2 className={style.heading}>Room: {roomId}</h2>
+     <div className={style.container}>
+    <h2 className={style.heading}>Room: {roomId}</h2>
 
-      <div className={style.videoGrid}>
-        <div className={style.videoBlock}>
-          <h3>You</h3>
-          <video ref={localVideoRef} autoPlay muted playsInline className={style.video} />
-          <button onClick={toggleOwnMic} className={style.button}>
-            {isMicMuted ? 'Unmute Mic' : 'Mute Mic'}
-          </button>
-          {role === 'host' && (
-            <>
+    <div className={style.videoGrid}>
+      <div className={style.videoBlock}>
+        <h3>You</h3>
+        <video ref={localVideoRef} autoPlay muted playsInline className={style.video} />
+        <button onClick={toggleOwnMic} className={style.button}>
+          {isMicMuted ? 'Unmute Mic' : 'Mute Mic'}
+        </button>
+        {role === 'host' && (
+          <>
+            {!isSharingScreen ? (
               <button onClick={shareScreen} className={style.button}>Share Screen</button>
-              <button onClick={toggleOwnVideo} className={style.button}>
-                {isVideoOff ? 'Turn On Camera' : 'Turn Off Camera'}
-              </button>
-            </>
-          )}
-        </div>
-
-        {Object.entries(remoteStreams).map(([id, stream]) => {
-          const participant = participants.find((p) => p.socketId === id);
-          return (
-            <VideoBox
-              key={id}
-              stream={stream}
-              name={participant?.name || 'Remote'}
-              isCameraOff={participant?.isCameraOff}
-            />
-          );
-        })}
+            ) : (
+              <button onClick={stopScreenShare} className={style.button}>Stop Sharing</button>
+            )}
+            <button onClick={toggleOwnVideo} className={style.button}>
+              {isVideoOff ? 'Turn On Camera' : 'Turn Off Camera'}
+            </button>
+          </>
+        )}
+        <button onClick={leaveRoom} className={style.leaveButton}>Leave Room</button>
       </div>
 
-      {role === 'host' && (
-        <div className={style.participantList}>
-          <h3>Participants ({participants.length})</h3>
-          <ul>
-            {participants.map((p) => (
-              <li key={p.socketId}>
-                {p.name} {p.socketId === socket.id ? '(You)' : ''} {p.isCameraOff ? '📷 Off' : '📷 On'}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+      {Object.entries(remoteStreams).map(([id, stream]) => {
+        const participant = participants.find((p) => p.socketId === id);
+        return (
+          <VideoBox
+            key={id}
+            stream={stream}
+            name={participant?.name || 'Remote'}
+            isCameraOff={participant?.isCameraOff}
+          />
+        );
+      })}
     </div>
+
+    {role === 'host' && (
+      <div className={style.participantList}>
+        <h3>Participants ({participants.length})</h3>
+        <ul>
+          {participants.map((p) => (
+            <li key={p.socketId}>
+              {p.name} {p.socketId === socket.id ? '(You)' : ''} {p.isCameraOff ? '📷 Off' : '📷 On'}
+            </li>
+          ))}
+        </ul>
+      </div>
+    )}
+  </div>
   );
 }
