@@ -44,6 +44,9 @@ export default function RoomPage() {
   // const [chatTarget, setChatTarget] = useState('all');
   const [isMicMuted, setIsMicMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
+  const [isSharingScreen, setIsSharingScreen] = useState(false);
+   const [hasLeft, setHasLeft] = useState(false);
+  
 
   useEffect(() => {
     if (!roomId || !name || !role) return;
@@ -239,31 +242,94 @@ const toggleOwnVideo = async () => {
     setIsVideoOff(false);
   }
 };
-
-  const shareScreen = async () => {
+  const stopScreenShare = async () => {
     try {
-      const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-      const screenTrack = screenStream.getVideoTracks()[0];
-      screenTrack.onended = () => {
-        socket.emit('screen-share-stopped');
-      };
-
-      // Replace video track in all peer connections
-      peersRef.current.forEach((pc) => {
-        const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
-        if (sender) sender.replaceTrack(screenTrack);
-      });
-
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = screenStream;
+      // 1. Stop the screen track
+      const screenTrack = localVideoRef.current?.srcObject?.getVideoTracks()[0];
+      if (screenTrack?.kind === 'video') {
+        screenTrack.stop(); // This triggers onended
       }
 
-      socket.emit('screen-share-started');
+      // 2. Restart camera
+      const cameraStream = await navigator.mediaDevices.getUserMedia({ video: true });
+      const newVideoTrack = cameraStream.getVideoTracks()[0];
+      const audioTrack = streamRef.current.getAudioTracks()[0];
+
+      const newCombinedStream = new MediaStream([audioTrack, newVideoTrack]);
+
+      // 3. Update local video and peer tracks
+      localVideoRef.current.srcObject = newCombinedStream;
+      streamRef.current = newCombinedStream;
+
+      peersRef.current.forEach((pc) => {
+        const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
+        if (sender) sender.replaceTrack(newVideoTrack);
+      });
+
+      // ✅ Notify others screen sharing has stopped
+      socket.emit('screen-share-stopped');
+
+      // 4. Update state
+      setIsSharingScreen(false);
+      setParticipants((prev) =>
+        prev.map((p) =>
+          p.socketId === socket.id ? { ...p, isSharingScreen: false } : p
+        )
+      );
     } catch (err) {
-      console.error('Failed to share screen:', err);
+      console.error('❌ Error while stopping screen share and restoring camera:', err);
     }
   };
+    const shareScreen = async () => {
+    if (role !== 'host') {
+      socket.emit('request-screen-share', { roomId, userId: name });
+    } else {
+      await actuallyShareScreen();
+    }
+  };
+  const actuallyShareScreen = async () => {
+  try {
+    const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+    const screenTrack = screenStream.getVideoTracks()[0];
 
+    screenTrack.onended = async () => {
+      await stopScreenShare();
+    };
+
+    // Update streamRef with screenStream
+    const audioTracks = streamRef.current?.getAudioTracks() || [];
+    const combined = new MediaStream([...audioTracks, screenTrack]);
+    streamRef.current = combined;
+
+    // Replace track in all peers
+    peersRef.current.forEach((pc) => {
+      const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
+      if (sender) sender.replaceTrack(screenTrack);
+    });
+
+    // Update local video view
+    localVideoRef.current.srcObject = combined;
+
+    setIsSharingScreen(true);
+    socket.emit('screen-share-started');
+  } catch (err) {
+    console.error('❌ Failed to share screen:', err);
+  }
+};
+
+   const leaveRoom = () => {
+    setHasLeft(true);
+
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    peersRef.current.forEach((pc) => pc.close());
+    peersRef.current.clear();
+
+    socket.emit('leave-room', { roomId, userId: name });
+    socket.disconnect();
+
+    // Optional: redirect or show exit screen
+    window.location.href = '/'; // Change to desired route
+  };
   return (
     <div className={style.container}>
       <h2 className={style.heading}>Room: {roomId}</h2>
@@ -274,12 +340,19 @@ const toggleOwnVideo = async () => {
           <button onClick={toggleOwnMic} className={style.button}>
             {isMicMuted ? 'Unmute Mic' : 'Mute Mic'}
           </button>
-          <button onClick={shareScreen} className={style.button}>
-            Share Screen
-          </button>
-           <button onClick={toggleOwnVideo} className={style.button}>
-           {isVideoOff ? 'Turn On Camera' : 'Turn Off Camera'}
-         </button>
+         {role === 'host' && (
+            <>
+              {!isSharingScreen ? (
+                <button onClick={shareScreen} className={style.button}>Share Screen</button>
+              ) : (
+                <button onClick={stopScreenShare} className={style.button}>Stop Sharing</button>
+              )}
+              <button onClick={toggleOwnVideo} className={style.button}>
+                {isVideoOff ? 'Turn On Camera' : 'Turn Off Camera'}
+              </button>
+            </>
+          )}
+          <button onClick={leaveRoom} className={style.leaveButton}>Leave Room</button>
         </div>
 
        {Object.entries(remoteStreams).map(([id, stream]) => {
