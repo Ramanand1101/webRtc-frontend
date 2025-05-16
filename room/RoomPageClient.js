@@ -90,6 +90,7 @@ export default function RoomPage() {
     if (!roomId || !name || !role) return;
 
     const ICE_SERVERS = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+    
 
     const createPeer = (peerId) => {
       const pc = new RTCPeerConnection(ICE_SERVERS);
