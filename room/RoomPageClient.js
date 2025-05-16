@@ -296,7 +296,18 @@ const toggleOwnVideo = async () => {
         })}
 
       </div>
-
+{role === 'host' && (
+        <div className={style.participantList}>
+          <h3>Participants ({participants.length})</h3>
+          <ul>
+            {participants.map((p) => (
+              <li key={p.socketId}>
+                {p.name} {p.socketId === socket.id ? '(You)' : ''} {p.isCameraOff ? '📷 Off' : '📷 On'}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {/* {chatEnabled && (
         <div className={style.chatBox}>
           <h4>Chat</h4>
