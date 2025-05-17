@@ -50,6 +50,8 @@ export default function RoomPage() {
   const [isSharingScreen, setIsSharingScreen] = useState(false);
   const [hasLeft, setHasLeft] = useState(false);
   const canvasRef = useRef(null);
+  const audioContextRef = useRef(null);
+  const audioDestinationRef = useRef(null);
 
   const drawingIntervalRef = useRef(null);
   const [currentSource, setCurrentSource] = useState('screen'); // or 'camera'
@@ -72,6 +74,18 @@ export default function RoomPage() {
         const stream = event.streams[0];
         console.log('📡 Received track from:', peerId, stream);
         setRemoteStreams((prev) => ({ ...prev, [peerId]: stream }));
+        const remoteAudioTrack = stream.getAudioTracks()[0];
+        if (
+          isRecording &&
+          remoteAudioTrack &&
+          audioContextRef.current &&
+          audioDestinationRef.current
+        ) {
+          const remoteStreamForContext = new MediaStream([remoteAudioTrack]);
+          const remoteSource = audioContextRef.current.createMediaStreamSource(remoteStreamForContext);
+          remoteSource.connect(audioDestinationRef.current);
+          console.log('🎧 New participant audio added to mixer (ontrack)');
+        }
       };
 
       const existingSenders = pc.getSenders().map((s) => s.track?.id);
@@ -123,7 +137,7 @@ export default function RoomPage() {
       localVideoRef.current.srcObject = stream;
 
 
-turnOffParticipantVideo();
+      turnOffParticipantVideo();
       socket.emit('join-room', { roomId, userId: name, role });
       setParticipants([{ socketId: socket.id, name }]);
 
@@ -295,16 +309,16 @@ turnOffParticipantVideo();
     }
   };
 
-const turnOffParticipantVideo = () => {
-  if (role === 'participant') {
-    const videoTrack = streamRef.current?.getVideoTracks?.()[0];
-    if (videoTrack && videoTrack.enabled) {
-      videoTrack.enabled = false;
-      setIsVideoOff(true);
-      console.log('📷 Participant camera turned off via function');
+  const turnOffParticipantVideo = () => {
+    if (role === 'participant') {
+      const videoTrack = streamRef.current?.getVideoTracks?.()[0];
+      if (videoTrack && videoTrack.enabled) {
+        videoTrack.enabled = false;
+        setIsVideoOff(true);
+        console.log('📷 Participant camera turned off via function');
+      }
     }
-  }
-};
+  };
   const toggleOwnVideo = async () => {
     const videoTracks = streamRef.current?.getVideoTracks();
     if (!videoTracks || videoTracks.length === 0) return;
@@ -559,31 +573,56 @@ const turnOffParticipantVideo = () => {
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
 
+    // 1. Get host mic and video (camera by default)
     const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     const camStream = await navigator.mediaDevices.getUserMedia({ video: true });
     const camTrack = camStream.getVideoTracks()[0];
 
-    // ✅ Start with camera by default (no screen access initially)
-    let currentVideoTrack = camTrack;
-
+    // 2. Setup video element for canvas drawing
     videoElementRef.current = document.createElement('video');
     videoElementRef.current.muted = true;
-    videoElementRef.current.srcObject = new MediaStream([currentVideoTrack]);
-
+    videoElementRef.current.srcObject = new MediaStream([camTrack]);
     await videoElementRef.current.play();
 
+    // 3. Draw video on canvas
     drawingIntervalRef.current = setInterval(() => {
       if (videoElementRef.current?.videoWidth > 0) {
         ctx.drawImage(videoElementRef.current, 0, 0, canvas.width, canvas.height);
       }
     }, 1000 / 30);
 
+    // 4. Create canvas stream
     const canvasStream = canvas.captureStream(30);
-    const audioTrack = micStream.getAudioTracks()[0];
-    canvasStream.addTrack(audioTrack);
 
+    // 5. MIX AUDIO using Web Audio API
+    const audioContext = new AudioContext();
+    const destination = audioContext.createMediaStreamDestination();
+
+    // Save references for dynamic updates
+    audioContextRef.current = audioContext;
+    audioDestinationRef.current = destination;
+
+    // Add host mic
+    const hostSource = audioContext.createMediaStreamSource(micStream);
+    hostSource.connect(destination);
+
+    // Add current participants' audio
+    Object.values(remoteStreams).forEach(remoteStream => {
+      const remoteAudioTrack = remoteStream.getAudioTracks()[0];
+      if (remoteAudioTrack) {
+        const remoteStreamForContext = new MediaStream([remoteAudioTrack]);
+        const remoteSource = audioContext.createMediaStreamSource(remoteStreamForContext);
+        remoteSource.connect(destination);
+      }
+    });
+
+    // Add all audio tracks to canvas stream
+    destination.stream.getAudioTracks().forEach(track => {
+      canvasStream.addTrack(track);
+    });
+
+    // 6. Start recording
     const recorder = new MediaRecorder(canvasStream, { mimeType: 'video/webm' });
-
     recordedChunksRef.current = [];
 
     recorder.ondataavailable = (event) => {
@@ -609,9 +648,10 @@ const turnOffParticipantVideo = () => {
     recorder.start();
     setMediaRecorder(recorder);
     setIsRecording(true);
-    setCurrentSource('camera'); // ✅ Save state
-    console.log('🎥 Canvas-based recording started with camera');
+    setCurrentSource('camera');
+    console.log('🎥 Canvas recording started with mixed audio');
   };
+
 
   // const stopRecording = () => {
   //   if (mediaRecorder && role === 'host') {
@@ -648,16 +688,16 @@ const turnOffParticipantVideo = () => {
             {isMicMuted ? 'Unmute Mic' : 'Mute Mic'}
           </button>
           {role === 'host' && (
-          <>
-            {!isSharingScreen ? (
-              <button onClick={shareScreen} className={style.button}>Share Screen</button>
-            ) : (
-              <button onClick={stopScreenShare} className={style.button}>Stop Sharing</button>
-            )}
-            <button onClick={toggleOwnVideo} className={style.button}>
-              {isVideoOff ? 'Turn On Camera' : 'Turn Off Camera'}
-            </button>
-          </>
+            <>
+              {!isSharingScreen ? (
+                <button onClick={shareScreen} className={style.button}>Share Screen</button>
+              ) : (
+                <button onClick={stopScreenShare} className={style.button}>Stop Sharing</button>
+              )}
+              <button onClick={toggleOwnVideo} className={style.button}>
+                {isVideoOff ? 'Turn On Camera' : 'Turn Off Camera'}
+              </button>
+            </>
           )}
           <button onClick={leaveRoom} className={style.leaveButton}>Leave Room</button>
         </div>
@@ -746,18 +786,18 @@ const turnOffParticipantVideo = () => {
                 </option>
               ))}
             </select>
-           <input
-  value={message}
-  onChange={(e) => setMessage(e.target.value)}
-  onKeyDown={(e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault(); // avoid form submission if any
-      sendMessage();
-    }
-  }}
-  placeholder="Type a message"
-  className={style.chatInput}
-/>
+            <input
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault(); // avoid form submission if any
+                  sendMessage();
+                }
+              }}
+              placeholder="Type a message"
+              className={style.chatInput}
+            />
             <button onClick={sendMessage} className={style.sendButton}>
               Send
             </button>
