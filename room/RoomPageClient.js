@@ -35,64 +35,95 @@ export default function RoomPage() {
   const localVideoRef = useRef(null);
   const streamRef = useRef(null);
   const peersRef = useRef(new Map());
-
+  const videoElementRef = useRef(null); // dynamically switch this source
   const [remoteStreams, setRemoteStreams] = useState({});
   const [participants, setParticipants] = useState([]);
-  // const [chatMessages, setChatMessages] = useState([]);
-  // const [chatEnabled, setChatEnabled] = useState(false);
-  // const [message, setMessage] = useState('');
-  // const [chatTarget, setChatTarget] = useState('all');
+  const [mediaRecorder, setMediaRecorder] = useState(null);
+  const recordedChunksRef = useRef([]);
+  const [isRecording, setIsRecording] = useState(false);
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatEnabled, setChatEnabled] = useState(false);
+  const [message, setMessage] = useState('');
+  const [chatTarget, setChatTarget] = useState('all');
   const [isMicMuted, setIsMicMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
   const [isSharingScreen, setIsSharingScreen] = useState(false);
-   const [hasLeft, setHasLeft] = useState(false);
-  
+  const [hasLeft, setHasLeft] = useState(false);
+  const canvasRef = useRef(null);
+
+  const drawingIntervalRef = useRef(null);
+  const [currentSource, setCurrentSource] = useState('screen'); // or 'camera'
 
   useEffect(() => {
     if (!roomId || !name || !role) return;
 
     const ICE_SERVERS = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
-const createPeer = (peerId) => {
-  const pc = new RTCPeerConnection(ICE_SERVERS);
 
-  pc.onicecandidate = (event) => {
-    if (event.candidate) {
-      socket.emit('send-ice-candidate', { to: peerId, candidate: event.candidate });
-    }
-  };
+    const createPeer = (peerId) => {
+      const pc = new RTCPeerConnection(ICE_SERVERS);
 
-  pc.ontrack = (event) => {
-    const stream = event.streams[0];
-    console.log('📡 Received track from:', peerId, stream);
-    setRemoteStreams((prev) => ({ ...prev, [peerId]: stream }));
-  };
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          socket.emit('send-ice-candidate', { to: peerId, candidate: event.candidate });
+        }
+      };
 
-  // ✅ Prevent duplicate tracks being added
-  const existingSenders = pc.getSenders().map((s) => s.track?.id);
-  streamRef.current.getTracks().forEach((track) => {
-    if (!existingSenders.includes(track.id)) {
-      pc.addTrack(track, streamRef.current);
-    }
-  });
+      pc.ontrack = (event) => {
+        const stream = event.streams[0];
+        console.log('📡 Received track from:', peerId, stream);
+        setRemoteStreams((prev) => ({ ...prev, [peerId]: stream }));
+      };
 
-  return pc;
-};
+      const existingSenders = pc.getSenders().map((s) => s.track?.id);
+
+      const tracks = streamRef.current?.getTracks() || [];
+      console.log("📢 Participant is sending tracks:", tracks);
+
+      tracks.forEach((track) => {
+        console.log("🎤 Track kind:", track.kind, "| enabled:", track.enabled);
+
+        // ✅ Make sure audio is enabled before sending
+        if (track.kind === 'audio' && !track.enabled) {
+          track.enabled = true;
+          console.log('✅ Enabling audio track before sending');
+        }
+
+        // ✅ Add only if not already sent
+        if (!existingSenders.includes(track.id)) {
+          pc.addTrack(track, streamRef.current);
+          console.log('✅ Track added to peer connection:', track.kind);
+        }
+      });
+
+      return pc;
+    };
 
 
     const start = async () => {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-      
-     // Assign stream to refs
-streamRef.current = stream;
-localVideoRef.current.srcObject = stream;
 
-// If participant, immediately stop their video track
-if (role === 'participant') {
-  const videoTracks = stream.getVideoTracks();
-  videoTracks.forEach((track) => track.stop());
-  localVideoRef.current.srcObject = null; // hide local preview
-  setIsVideoOff(true); // update state
-}
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      // Host gets full stream
+      // if (role === 'participant') {
+      //   const videoTracks = stream.getVideoTracks();
+      //   videoTracks.forEach((track) => track.stop());
+
+      //   const audioTrack = stream.getAudioTracks()[0];
+
+      //   if (audioTrack) {
+      //      audioTrack.enabled = true; // Ensure it's transmitting
+      //     const audioOnlyStream = new MediaStream([audioTrack]);
+      //     streamRef.current = audioOnlyStream;
+      //   }
+
+      //   localVideoRef.current.srcObject = null;
+      //   setIsVideoOff(true);
+      // }
+      // Assign stream to refs
+      streamRef.current = stream;
+      localVideoRef.current.srcObject = stream;
+
+
+turnOffParticipantVideo();
       socket.emit('join-room', { roomId, userId: name, role });
       setParticipants([{ socketId: socket.id, name }]);
 
@@ -141,9 +172,9 @@ if (role === 'participant') {
         setChatMessages((prev) => [...prev, chat]);
       });
 
-      // socket.on('chat-permission-updated', ({ enabled }) => {
-      //   setChatEnabled(enabled);
-      // });
+      socket.on('chat-permission-updated', ({ enabled }) => {
+        setChatEnabled(enabled);
+      });
 
       socket.on('user-disconnected', (socketId) => {
         const pc = peersRef.current.get(socketId);
@@ -191,15 +222,15 @@ if (role === 'participant') {
     };
   }, [roomId, name, role]);
 
-  // const sendMessage = () => {
-  //   if (!message.trim()) return;
-  //   socket.emit('send-chat', {
-  //     roomId,
-  //     message,
-  //     to: chatTarget === 'all' ? null : chatTarget,
-  //   });
-  //   setMessage('');
-  // };
+  const sendMessage = () => {
+    if (!message.trim()) return;
+    socket.emit('send-chat', {
+      roomId,
+      message,
+      to: chatTarget === 'all' ? null : chatTarget,
+    });
+    setMessage('');
+  };
 
   const toggleOwnMic = () => {
     const audioTracks = streamRef.current?.getAudioTracks();
@@ -209,78 +240,200 @@ if (role === 'participant') {
       setIsMicMuted(newMutedState);
     }
   };
+  const switchRecordingSource = async () => {
+    if (!videoElementRef.current) return;
 
-const toggleOwnVideo = async () => {
-  const videoTracks = streamRef.current?.getVideoTracks();
-  if (!videoTracks || videoTracks.length === 0) return;
+    const newSource = currentSource === 'screen' ? 'camera' : 'screen';
 
-  if (!isVideoOff) {
-    // Stop video completely (turns off flashlight)
-    videoTracks.forEach((track) => track.stop());
-    localVideoRef.current.srcObject = null;
-    setIsVideoOff(true);
-  } else {
-    // Restart video
-    const newStream = await navigator.mediaDevices.getUserMedia({ video: true });
-    const newTrack = newStream.getVideoTracks()[0];
-
-    // Replace track in peer connections
-    peersRef.current.forEach((pc) => {
-      const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
-      if (sender) sender.replaceTrack(newTrack);
-    });
-
-    streamRef.current.addTrack(newTrack);
-
-    // Update local preview
-    const updatedStream = new MediaStream([
-      ...streamRef.current.getAudioTracks(),
-      newTrack,
-    ]);
-    localVideoRef.current.srcObject = updatedStream;
-
-    setIsVideoOff(false);
-  }
-};
-  const stopScreenShare = async () => {
     try {
-      // 1. Stop the screen track
-      const screenTrack = localVideoRef.current?.srcObject?.getVideoTracks()[0];
-      if (screenTrack?.kind === 'video') {
-        screenTrack.stop(); // This triggers onended
+      let newStream;
+      if (newSource === 'camera') {
+        newStream = await navigator.mediaDevices.getUserMedia({ video: true });
+      } else {
+        newStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
       }
 
-      // 2. Restart camera
-      const cameraStream = await navigator.mediaDevices.getUserMedia({ video: true });
-      const newVideoTrack = cameraStream.getVideoTracks()[0];
-      const audioTrack = streamRef.current.getAudioTracks()[0];
+      const newTrack = newStream.getVideoTracks()[0];
 
-      const newCombinedStream = new MediaStream([audioTrack, newVideoTrack]);
+      // ✅ For recording (canvas)
+      videoElementRef.current.srcObject = new MediaStream([newTrack]);
+      videoElementRef.current.onloadedmetadata = async () => {
+        try {
+          await videoElementRef.current.play();
+        } catch (err) {
+          console.error('🔁 Play failed after source switch:', err);
+        }
+      };
 
-      // 3. Update local video and peer tracks
-      localVideoRef.current.srcObject = newCombinedStream;
+      // ✅ For WebRTC (broadcast to others)
+      const currentAudioTracks = streamRef.current?.getAudioTracks() || [];
+      const newCombinedStream = new MediaStream([...currentAudioTracks, newTrack]);
+
       streamRef.current = newCombinedStream;
+      localVideoRef.current.srcObject = newCombinedStream;
 
+      // ✅ Update peer video tracks
       peersRef.current.forEach((pc) => {
         const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
-        if (sender) sender.replaceTrack(newVideoTrack);
+        if (sender) sender.replaceTrack(newTrack);
       });
 
-      // ✅ Notify others screen sharing has stopped
-      socket.emit('screen-share-stopped');
+      // ✅ Emit socket event if screen sharing
+      if (newSource === 'screen') {
+        socket.emit('screen-share-started');
+        setIsSharingScreen(true);
+      } else {
+        socket.emit('screen-share-stopped');
+        setIsSharingScreen(false);
+      }
 
-      // 4. Update state
+      setCurrentSource(newSource);
+      console.log(`🔁 Switched to ${newSource} — shared to peers & canvas`);
+
+    } catch (err) {
+      console.error('❌ Error switching source and sharing:', err);
+    }
+  };
+
+const turnOffParticipantVideo = () => {
+  if (role === 'participant') {
+    const videoTrack = streamRef.current?.getVideoTracks?.()[0];
+    if (videoTrack && videoTrack.enabled) {
+      videoTrack.enabled = false;
+      setIsVideoOff(true);
+      console.log('📷 Participant camera turned off via function');
+    }
+  }
+};
+  const toggleOwnVideo = async () => {
+    const videoTracks = streamRef.current?.getVideoTracks();
+    if (!videoTracks || videoTracks.length === 0) return;
+
+    if (!isVideoOff) {
+      // Stop video completely (turns off flashlight)
+      videoTracks.forEach((track) => track.stop());
+      localVideoRef.current.srcObject = null;
+      setIsVideoOff(true);
+    } else {
+      // Restart video
+      const newStream = await navigator.mediaDevices.getUserMedia({ video: true });
+      const newTrack = newStream.getVideoTracks()[0];
+
+      // Replace track in peer connections
+      peersRef.current.forEach((pc) => {
+        const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
+        if (sender) sender.replaceTrack(newTrack);
+      });
+
+      streamRef.current.addTrack(newTrack);
+
+      // Update local preview
+      const updatedStream = new MediaStream([
+        ...streamRef.current.getAudioTracks(),
+        newTrack,
+      ]);
+      localVideoRef.current.srcObject = updatedStream;
+
+      setIsVideoOff(false);
+    }
+  };
+  // const stopScreenShare = async () => {
+  //   try {
+  //     // 1. Stop the screen track
+  //     const screenTrack = localVideoRef.current?.srcObject?.getVideoTracks()[0];
+  //     if (screenTrack?.kind === 'video') {
+  //       screenTrack.stop(); // This triggers onended
+  //     }
+
+  //     // 2. Restart camera
+  //     const cameraStream = await navigator.mediaDevices.getUserMedia({ video: true });
+  //     const newVideoTrack = cameraStream.getVideoTracks()[0];
+  //     const audioTrack = streamRef.current.getAudioTracks()[0];
+
+  //     const newCombinedStream = new MediaStream([audioTrack, newVideoTrack]);
+
+  //     // 3. Update local video and peer tracks
+  //     localVideoRef.current.srcObject = newCombinedStream;
+  //     streamRef.current = newCombinedStream;
+
+  //     peersRef.current.forEach((pc) => {
+  //       const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
+  //       if (sender) sender.replaceTrack(newVideoTrack);
+  //     });
+
+  //     // ✅ Notify others screen sharing has stopped
+  //     socket.emit('screen-share-stopped');
+
+  //     // 4. Update state
+  //     setIsSharingScreen(false);
+  //     setParticipants((prev) =>
+  //       prev.map((p) =>
+  //         p.socketId === socket.id ? { ...p, isSharingScreen: false } : p
+  //       )
+  //     );
+  //   } catch (err) {
+  //     console.error('❌ Error while stopping screen share and restoring camera:', err);
+  //   }
+  // };
+
+
+  const stopScreenShare = async () => {
+    try {
+      // 1. Stop the screen track (from canvas video element)
+
+      const screenTrack = videoElementRef.current?.srcObject?.getVideoTracks?.()[0];
+      if (screenTrack && screenTrack.readyState === 'live') {
+        screenTrack.stop(); // triggers onended
+
+      }
+      // 2. Get new camera stream
+      const camStream = await navigator.mediaDevices.getUserMedia({ video: true });
+      const camTrack = camStream.getVideoTracks()[0];
+
+      // 3. Update streamRef and broadcast
+      const currentAudioTracks = streamRef.current?.getAudioTracks() || [];
+      const newCombinedStream = new MediaStream([...currentAudioTracks, camTrack]);
+      streamRef.current = newCombinedStream;
+
+      // 4. Replace video track in all peer connections
+      peersRef.current.forEach((pc) => {
+        const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
+        if (sender) sender.replaceTrack(camTrack);
+      });
+
+      // 5. Update local preview
+      localVideoRef.current.srcObject = newCombinedStream;
+
+      // 6. Update canvas recording source (videoElementRef)
+      if (videoElementRef.current) {
+        videoElementRef.current.srcObject = new MediaStream([camTrack]);
+        videoElementRef.current.onloadedmetadata = async () => {
+          try {
+            await videoElementRef.current.play();
+          } catch (err) {
+            console.error('⚠️ Failed to resume camera video in canvas:', err);
+          }
+        };
+      }
+
+      // 7. Emit event and update UI state
+      socket.emit('screen-share-stopped');
       setIsSharingScreen(false);
+      setCurrentSource('camera');
       setParticipants((prev) =>
         prev.map((p) =>
           p.socketId === socket.id ? { ...p, isSharingScreen: false } : p
         )
       );
+
+      console.log('✅ Screen share stopped and camera restored');
+
     } catch (err) {
       console.error('❌ Error while stopping screen share and restoring camera:', err);
     }
   };
-    const shareScreen = async () => {
+
+  const shareScreen = async () => {
     if (role !== 'host') {
       socket.emit('request-screen-share', { roomId, userId: name });
     } else {
@@ -288,36 +441,37 @@ const toggleOwnVideo = async () => {
     }
   };
   const actuallyShareScreen = async () => {
-  try {
-    const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-    const screenTrack = screenStream.getVideoTracks()[0];
+    try {
+      const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      const screenTrack = screenStream.getVideoTracks()[0];
 
-    screenTrack.onended = async () => {
-      await stopScreenShare();
-    };
+      screenTrack.onended = () => {
+        console.log('✅ Browser-native stop sharing clicked');
+        stopScreenShare();
+      };
 
-    // Update streamRef with screenStream
-    const audioTracks = streamRef.current?.getAudioTracks() || [];
-    const combined = new MediaStream([...audioTracks, screenTrack]);
-    streamRef.current = combined;
+      // Update streamRef with screenStream
+      const audioTracks = streamRef.current?.getAudioTracks() || [];
+      const combined = new MediaStream([...audioTracks, screenTrack]);
+      streamRef.current = combined;
 
-    // Replace track in all peers
-    peersRef.current.forEach((pc) => {
-      const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
-      if (sender) sender.replaceTrack(screenTrack);
-    });
+      // Replace track in all peers
+      peersRef.current.forEach((pc) => {
+        const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
+        if (sender) sender.replaceTrack(screenTrack);
+      });
 
-    // Update local video view
-    localVideoRef.current.srcObject = combined;
+      // Update local video view
+      localVideoRef.current.srcObject = combined;
 
-    setIsSharingScreen(true);
-    socket.emit('screen-share-started');
-  } catch (err) {
-    console.error('❌ Failed to share screen:', err);
-  }
-};
+      setIsSharingScreen(true);
+      socket.emit('screen-share-started');
+    } catch (err) {
+      console.error('❌ Failed to share screen:', err);
+    }
+  };
 
-   const leaveRoom = () => {
+  const leaveRoom = () => {
     setHasLeft(true);
 
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -330,7 +484,160 @@ const toggleOwnVideo = async () => {
     // Optional: redirect or show exit screen
     window.location.href = '/'; // Change to desired route
   };
+
+
+  const uploadRecording = async (blob, filename) => {
+    const formData = new FormData();
+    formData.append('video', blob, filename);
+
+    try {
+      const res = await fetch('http://localhost:5000/upload', {
+        //const res = await fetch('https://webrtc-backend-goxe.onrender.com/upload', {
+        method: 'POST',
+        body: formData,
+      });
+
+      const data = await res.json();
+
+      if (res.ok) {
+        console.log('✅ Uploaded to backend:', data.fileUrl);
+        alert('Recording uploaded & saved:\n' + data.fileUrl);
+      } else {
+        console.error('❌ Upload failed:', data.message);
+      }
+    } catch (err) {
+      console.error('❌ Error uploading recording:', err);
+    }
+  };
+
+
+  // const startRecording = () => {
+  //   if (!streamRef.current || role !== 'host') return;
+
+  //   try {
+  //     recordedChunksRef.current = []; // ✅ clear previous chunks
+
+  //     const recorder = new MediaRecorder(streamRef.current, { mimeType: 'video/webm' });
+
+  //     recorder.ondataavailable = (event) => {
+  //       if (event.data && event.data.size > 0) {
+  //         recordedChunksRef.current.push(event.data);
+  //       }
+  //     };
+
+  //     recorder.onstop = async () => {
+  //       if (recordedChunksRef.current.length === 0) return;
+
+  //       const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+  //       const fileName = `recording-${roomId}-${Date.now()}.webm`;
+  //       recordedChunksRef.current = []; // ✅ ensure clean state
+
+  //       // ✅ Auto download
+  //       const downloadUrl = URL.createObjectURL(blob);
+  //       const a = document.createElement('a');
+  //       a.href = downloadUrl;
+  //       a.download = fileName;
+  //       a.click();
+  //       URL.revokeObjectURL(downloadUrl);
+
+  //       // ✅ Upload to backend
+  //       await uploadRecording(blob, fileName);
+  //     };
+
+  //     recorder.start();
+  //     setMediaRecorder(recorder);
+  //     setIsRecording(true);
+  //     console.log('🔴 Recording started');
+  //   } catch (err) {
+  //     console.error('❌ Failed to start recording:', err);
+  //   }
+  // };
+
+  const startRecordingWithCanvas = async () => {
+    if (role !== 'host') return;
+
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+
+    const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const camStream = await navigator.mediaDevices.getUserMedia({ video: true });
+    const camTrack = camStream.getVideoTracks()[0];
+
+    // ✅ Start with camera by default (no screen access initially)
+    let currentVideoTrack = camTrack;
+
+    videoElementRef.current = document.createElement('video');
+    videoElementRef.current.muted = true;
+    videoElementRef.current.srcObject = new MediaStream([currentVideoTrack]);
+
+    await videoElementRef.current.play();
+
+    drawingIntervalRef.current = setInterval(() => {
+      if (videoElementRef.current?.videoWidth > 0) {
+        ctx.drawImage(videoElementRef.current, 0, 0, canvas.width, canvas.height);
+      }
+    }, 1000 / 30);
+
+    const canvasStream = canvas.captureStream(30);
+    const audioTrack = micStream.getAudioTracks()[0];
+    canvasStream.addTrack(audioTrack);
+
+    const recorder = new MediaRecorder(canvasStream, { mimeType: 'video/webm' });
+
+    recordedChunksRef.current = [];
+
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) recordedChunksRef.current.push(event.data);
+    };
+
+    recorder.onstop = async () => {
+      clearInterval(drawingIntervalRef.current);
+
+      const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+      const fileName = `merged-recording-${Date.now()}.webm`;
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      a.click();
+      URL.revokeObjectURL(url);
+
+      await uploadRecording(blob, fileName);
+    };
+
+    recorder.start();
+    setMediaRecorder(recorder);
+    setIsRecording(true);
+    setCurrentSource('camera'); // ✅ Save state
+    console.log('🎥 Canvas-based recording started with camera');
+  };
+
+  // const stopRecording = () => {
+  //   if (mediaRecorder && role === 'host') {
+  //     try {
+  //       mediaRecorder.stop();
+  //       setIsRecording(false);
+  //       console.log('🛑 Recording stopped');
+  //     } catch (err) {
+  //       console.error('❌ Failed to stop recording:', err);
+  //     }
+  //   }
+  // };
+
+  const stopCanvasRecording = () => {
+    if (mediaRecorder) {
+      mediaRecorder.stop();
+      setIsRecording(false);
+      clearInterval(drawingIntervalRef.current);
+      console.log('🛑 Canvas-based recording stopped');
+    }
+  };
+
+
+
   return (
+
     <div className={style.container}>
       <h2 className={style.heading}>Room: {roomId}</h2>
       <div className={style.videoGrid}>
@@ -340,22 +647,22 @@ const toggleOwnVideo = async () => {
           <button onClick={toggleOwnMic} className={style.button}>
             {isMicMuted ? 'Unmute Mic' : 'Mute Mic'}
           </button>
-         {role === 'host' && (
-            <>
-              {!isSharingScreen ? (
-                <button onClick={shareScreen} className={style.button}>Share Screen</button>
-              ) : (
-                <button onClick={stopScreenShare} className={style.button}>Stop Sharing</button>
-              )}
-              <button onClick={toggleOwnVideo} className={style.button}>
-                {isVideoOff ? 'Turn On Camera' : 'Turn Off Camera'}
-              </button>
-            </>
+          {role === 'host' && (
+          <>
+            {!isSharingScreen ? (
+              <button onClick={shareScreen} className={style.button}>Share Screen</button>
+            ) : (
+              <button onClick={stopScreenShare} className={style.button}>Stop Sharing</button>
+            )}
+            <button onClick={toggleOwnVideo} className={style.button}>
+              {isVideoOff ? 'Turn On Camera' : 'Turn Off Camera'}
+            </button>
+          </>
           )}
           <button onClick={leaveRoom} className={style.leaveButton}>Leave Room</button>
         </div>
 
-       {Object.entries(remoteStreams).map(([id, stream]) => {
+        {Object.entries(remoteStreams).map(([id, stream]) => {
           const participant = participants.find((p) => p.socketId === id);
           console.log("userside", stream)
           return (
@@ -369,7 +676,7 @@ const toggleOwnVideo = async () => {
         })}
 
       </div>
-{role === 'host' && (
+      {role === 'host' && (
         <div className={style.participantList}>
           <h3>Participants ({participants.length})</h3>
           <ul>
@@ -381,7 +688,42 @@ const toggleOwnVideo = async () => {
           </ul>
         </div>
       )}
-      {/* {chatEnabled && (
+
+
+      {/* {role === 'host' && (
+  <div className={style.recordingControls}>
+    <canvas ref={canvasRef} width={1280} height={720} style={{ display: 'none' }} />
+    {!isRecording ? (
+      <button onClick={startRecording} className={style.button}>Start Recording</button>
+    ) : (
+      <button onClick={stopRecording} className={style.button}>Stop Recording</button>
+    )}
+  </div>
+)} */}
+      <canvas
+        ref={canvasRef}
+        width={1280}
+        height={720}
+        style={{ display: 'none' }}
+      />
+      {role === 'host' && (
+        <>
+          {!isRecording ? (
+            <button onClick={startRecordingWithCanvas} className={style.button}>
+              Start Smart Recording
+            </button>
+          ) : (
+            <>
+              <button onClick={stopCanvasRecording} className={style.button}>Stop Recording</button>
+              <button onClick={switchRecordingSource} className={style.button}>
+                Switch Source (Camera / Screen)
+              </button>
+            </>
+          )}
+        </>
+      )}
+
+      {chatEnabled && (
         <div className={style.chatBox}>
           <h4>Chat</h4>
           <div className={style.chatMessages}>
@@ -404,18 +746,24 @@ const toggleOwnVideo = async () => {
                 </option>
               ))}
             </select>
-            <input
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
-              placeholder="Type a message"
-              className={style.chatInput}
-            />
+           <input
+  value={message}
+  onChange={(e) => setMessage(e.target.value)}
+  onKeyDown={(e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault(); // avoid form submission if any
+      sendMessage();
+    }
+  }}
+  placeholder="Type a message"
+  className={style.chatInput}
+/>
             <button onClick={sendMessage} className={style.sendButton}>
               Send
             </button>
           </div>
         </div>
-      )} */}
+      )}
     </div>
   );
 }
