@@ -139,6 +139,7 @@ export default function RoomPage() {
 
       turnOffParticipantVideo();
       socket.emit('join-room', { roomId, userId: name, role });
+      console.log('📡 join-room emitted:', { roomId, userId: name, role });
       setParticipants([{ socketId: socket.id, name }]);
 
       socket.on('all-users', async (users) => {
@@ -183,9 +184,13 @@ export default function RoomPage() {
       });
 
       socket.on('receive-chat', (chat) => {
+        console.log('📩 New chat received:', chat);
         setChatMessages((prev) => [...prev, chat]);
       });
-
+      socket.on('chat-history', (messages) => {
+        console.log('📜 Chat history received:', messages);
+  setChatMessages((prev) => [...messages, ...prev]);
+});
       socket.on('chat-permission-updated', ({ enabled }) => {
         setChatEnabled(enabled);
       });
@@ -224,6 +229,7 @@ export default function RoomPage() {
         'receive-answer',
         'receive-ice-candidate',
         'receive-chat',
+         'chat-history', // <== ✅ add this here
         'chat-permission-updated',
         'user-disconnected',
         'screen-share-started',
@@ -234,7 +240,7 @@ export default function RoomPage() {
       peersRef.current.forEach((pc) => pc.close());
       peersRef.current.clear();
     };
-  }, [roomId, name, role]);
+  }, [roomId, name, role, isRecording,]);
 
   const sendMessage = () => {
     if (!message.trim()) return;
@@ -319,6 +325,7 @@ export default function RoomPage() {
       }
     }
   };
+
   const toggleOwnVideo = async () => {
     const videoTracks = streamRef.current?.getVideoTracks();
     if (!videoTracks || videoTracks.length === 0) return;
@@ -351,44 +358,7 @@ export default function RoomPage() {
       setIsVideoOff(false);
     }
   };
-  // const stopScreenShare = async () => {
-  //   try {
-  //     // 1. Stop the screen track
-  //     const screenTrack = localVideoRef.current?.srcObject?.getVideoTracks()[0];
-  //     if (screenTrack?.kind === 'video') {
-  //       screenTrack.stop(); // This triggers onended
-  //     }
-
-  //     // 2. Restart camera
-  //     const cameraStream = await navigator.mediaDevices.getUserMedia({ video: true });
-  //     const newVideoTrack = cameraStream.getVideoTracks()[0];
-  //     const audioTrack = streamRef.current.getAudioTracks()[0];
-
-  //     const newCombinedStream = new MediaStream([audioTrack, newVideoTrack]);
-
-  //     // 3. Update local video and peer tracks
-  //     localVideoRef.current.srcObject = newCombinedStream;
-  //     streamRef.current = newCombinedStream;
-
-  //     peersRef.current.forEach((pc) => {
-  //       const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
-  //       if (sender) sender.replaceTrack(newVideoTrack);
-  //     });
-
-  //     // ✅ Notify others screen sharing has stopped
-  //     socket.emit('screen-share-stopped');
-
-  //     // 4. Update state
-  //     setIsSharingScreen(false);
-  //     setParticipants((prev) =>
-  //       prev.map((p) =>
-  //         p.socketId === socket.id ? { ...p, isSharingScreen: false } : p
-  //       )
-  //     );
-  //   } catch (err) {
-  //     console.error('❌ Error while stopping screen share and restoring camera:', err);
-  //   }
-  // };
+  
 
 
   const stopScreenShare = async () => {
