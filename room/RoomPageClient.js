@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import style from './RoomPage.module.css';
 import ChatBox from './ChatBox';
-import ControlPanel from './ControlPanel'
+
 
 import socket from '../utils/socket';
 
@@ -90,7 +90,6 @@ export default function RoomPage() {
           console.log('🎧 New participant audio added to mixer (ontrack)');
         }
       };
-
       const existingSenders = pc.getSenders().map((s) => s.track?.id);
 
       const tracks = streamRef.current?.getTracks() || [];
@@ -115,27 +114,10 @@ export default function RoomPage() {
       return pc;
     };
 
-
     const start = async () => {
 
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-      // Host gets full stream
-      // if (role === 'participant') {
-      //   const videoTracks = stream.getVideoTracks();
-      //   videoTracks.forEach((track) => track.stop());
 
-      //   const audioTrack = stream.getAudioTracks()[0];
-
-      //   if (audioTrack) {
-      //      audioTrack.enabled = true; // Ensure it's transmitting
-      //     const audioOnlyStream = new MediaStream([audioTrack]);
-      //     streamRef.current = audioOnlyStream;
-      //   }
-
-      //   localVideoRef.current.srcObject = null;
-      //   setIsVideoOff(true);
-      // }
-      // Assign stream to refs
       streamRef.current = stream;
       localVideoRef.current.srcObject = stream;
 
@@ -220,9 +202,7 @@ export default function RoomPage() {
         console.log(`🛑 ${userId} stopped screen sharing in room ${roomId}`);
       });
     };
-
     start();
-
     return () => {
       socket.disconnect();
       [
@@ -362,8 +342,6 @@ export default function RoomPage() {
     }
   };
 
-
-
   const stopScreenShare = async () => {
     try {
       // 1. Stop the screen track (from canvas video element)
@@ -471,8 +449,6 @@ export default function RoomPage() {
     // Optional: redirect or show exit screen
     window.location.href = '/'; // Change to desired route
   };
-
-
   const uploadRecording = async (blob, filename) => {
     const formData = new FormData();
     formData.append('video', blob, filename);
@@ -496,8 +472,6 @@ export default function RoomPage() {
       console.error('❌ Error uploading recording:', err);
     }
   };
-
-
   const startRecordingWithCanvas = async () => {
     if (role !== 'host') return;
 
@@ -592,33 +566,30 @@ export default function RoomPage() {
     }
   };
 
-
-
   return (
-
     <div className={style.container}>
       <h2 className={style.heading}>Room: {roomId}</h2>
       <div className={style.videoGrid}>
         <div className={style.videoBlock}>
           <h3>You</h3>
           <video ref={localVideoRef} autoPlay muted playsInline className={style.video} />
-          <ControlPanel
-            role={role}
-            isMicMuted={isMicMuted}
-            isVideoOff={isVideoOff}
-            isRecording={isRecording}
-            isSharingScreen={isSharingScreen}
-            toggleOwnMic={toggleOwnMic}
-            toggleOwnVideo={toggleOwnVideo}
-            shareScreen={shareScreen}
-            stopScreenShare={stopScreenShare}
-            leaveRoom={leaveRoom}
-            startRecordingWithCanvas={startRecordingWithCanvas}
-            stopCanvasRecording={stopCanvasRecording}
-            switchRecordingSource={switchRecordingSource}
-          />
+          <button onClick={toggleOwnMic} className={style.button}>
+            {isMicMuted ? 'Unmute Mic' : 'Mute Mic'}
+          </button>
+          {role === 'host' && (
+            <>
+              {!isSharingScreen ? (
+                <button onClick={shareScreen} className={style.button}>Share Screen</button>
+              ) : (
+                <button onClick={stopScreenShare} className={style.button}>Stop Sharing</button>
+              )}
+              <button onClick={toggleOwnVideo} className={style.button}>
+                {isVideoOff ? 'Turn On Camera' : 'Turn Off Camera'}
+              </button>
+            </>
+          )}
+          <button onClick={leaveRoom} className={style.leaveButton}>Leave Room</button>
         </div>
-
         {Object.entries(remoteStreams).map(([id, stream]) => {
           const participant = participants.find((p) => p.socketId === id);
           console.log("userside", stream)
@@ -631,7 +602,6 @@ export default function RoomPage() {
             />
           );
         })}
-
       </div>
       {role === 'host' && (
         <div className={style.participantList}>
@@ -651,7 +621,22 @@ export default function RoomPage() {
         height={720}
         style={{ display: 'none' }}
       />
-
+      {role === 'host' && (
+        <>
+          {!isRecording ? (
+            <button onClick={startRecordingWithCanvas} className={style.button}>
+              Start Smart Recording
+            </button>
+          ) : (
+            <>
+              <button onClick={stopCanvasRecording} className={style.button}>Stop Recording</button>
+              <button onClick={switchRecordingSource} className={style.button}>
+                Switch Source (Camera / Screen)
+              </button>
+            </>
+          )}
+        </>
+      )}
       <ChatBox
         chatMessages={chatMessages}
         setChatMessages={setChatMessages}
