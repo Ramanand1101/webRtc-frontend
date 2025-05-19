@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import style from './RoomPage.module.css';
+import ChatBox from './ChatBox';
+
 import socket from '../utils/socket';
 
 function VideoBox({ stream, name }) {
@@ -733,7 +735,7 @@ export default function RoomPage() {
         </>
       )}
 
-      {chatEnabled && (
+      {/* {chatEnabled && (
         <div className={style.chatBox}>
           <h4>Chat</h4>
           <div className={style.chatMessages}>
@@ -773,7 +775,19 @@ export default function RoomPage() {
             </button>
           </div>
         </div>
-      )}
+      )} */}
+      <ChatBox
+  chatMessages={chatMessages}
+  setChatMessages={setChatMessages}
+  participants={participants}
+  chatEnabled={chatEnabled}
+  message={message}
+  setMessage={setMessage}
+  chatTarget={chatTarget}
+  setChatTarget={setChatTarget}
+  sendMessage={sendMessage}
+/>
+
     </div>
   );
 }
