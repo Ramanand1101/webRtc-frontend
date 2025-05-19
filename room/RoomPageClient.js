@@ -5,7 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import style from './RoomPage.module.css';
 import ChatBox from './ChatBox';
 
-
+import ControlPanel from './ControlPanel';
 import socket from '../utils/socket';
 
 function VideoBox({ stream, name }) {
@@ -235,14 +235,6 @@ export default function RoomPage() {
     setMessage('');
   };
 
-  const toggleOwnMic = () => {
-    const audioTracks = streamRef.current?.getAudioTracks();
-    if (audioTracks && audioTracks.length > 0) {
-      const newMutedState = !isMicMuted;
-      audioTracks.forEach((track) => (track.enabled = !newMutedState));
-      setIsMicMuted(newMutedState);
-    }
-  };
   const switchRecordingSource = async () => {
     if (!videoElementRef.current) return;
 
@@ -309,39 +301,6 @@ export default function RoomPage() {
     }
   };
 
-  const toggleOwnVideo = async () => {
-    const videoTracks = streamRef.current?.getVideoTracks();
-    if (!videoTracks || videoTracks.length === 0) return;
-
-    if (!isVideoOff) {
-      // Stop video completely (turns off flashlight)
-      videoTracks.forEach((track) => track.stop());
-      localVideoRef.current.srcObject = null;
-      setIsVideoOff(true);
-    } else {
-      // Restart video
-      const newStream = await navigator.mediaDevices.getUserMedia({ video: true });
-      const newTrack = newStream.getVideoTracks()[0];
-
-      // Replace track in peer connections
-      peersRef.current.forEach((pc) => {
-        const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
-        if (sender) sender.replaceTrack(newTrack);
-      });
-
-      streamRef.current.addTrack(newTrack);
-
-      // Update local preview
-      const updatedStream = new MediaStream([
-        ...streamRef.current.getAudioTracks(),
-        newTrack,
-      ]);
-      localVideoRef.current.srcObject = updatedStream;
-
-      setIsVideoOff(false);
-    }
-  };
-
   const stopScreenShare = async () => {
     try {
       // 1. Stop the screen track (from canvas video element)
@@ -398,47 +357,10 @@ export default function RoomPage() {
     }
   };
 
-  const shareScreen = async () => {
-    if (role !== 'host') {
-      socket.emit('request-screen-share', { roomId, userId: name });
-    } else {
-      await actuallyShareScreen();
-    }
-  };
-  const actuallyShareScreen = async () => {
-    try {
-      const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-      const screenTrack = screenStream.getVideoTracks()[0];
 
-      screenTrack.onended = () => {
-        console.log('✅ Browser-native stop sharing clicked');
-        stopScreenShare();
-      };
 
-      // Update streamRef with screenStream
-      const audioTracks = streamRef.current?.getAudioTracks() || [];
-      const combined = new MediaStream([...audioTracks, screenTrack]);
-      streamRef.current = combined;
-
-      // Replace track in all peers
-      peersRef.current.forEach((pc) => {
-        const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
-        if (sender) sender.replaceTrack(screenTrack);
-      });
-
-      // Update local video view
-      localVideoRef.current.srcObject = combined;
-
-      setIsSharingScreen(true);
-      socket.emit('screen-share-started');
-    } catch (err) {
-      console.error('❌ Failed to share screen:', err);
-    }
-  };
-
-  const leaveRoom = () => {
+ const leaveRoomCallback = () => {
     setHasLeft(true);
-
     streamRef.current?.getTracks().forEach((track) => track.stop());
     peersRef.current.forEach((pc) => pc.close());
     peersRef.current.clear();
@@ -446,8 +368,7 @@ export default function RoomPage() {
     socket.emit('leave-room', { roomId, userId: name });
     socket.disconnect();
 
-    // Optional: redirect or show exit screen
-    window.location.href = '/'; // Change to desired route
+    window.location.href = '/';
   };
   const uploadRecording = async (blob, filename) => {
     const formData = new FormData();
@@ -573,22 +494,23 @@ export default function RoomPage() {
         <div className={style.videoBlock}>
           <h3>You</h3>
           <video ref={localVideoRef} autoPlay muted playsInline className={style.video} />
-          <button onClick={toggleOwnMic} className={style.button}>
-            {isMicMuted ? 'Unmute Mic' : 'Mute Mic'}
-          </button>
-          {role === 'host' && (
-            <>
-              {!isSharingScreen ? (
-                <button onClick={shareScreen} className={style.button}>Share Screen</button>
-              ) : (
-                <button onClick={stopScreenShare} className={style.button}>Stop Sharing</button>
-              )}
-              <button onClick={toggleOwnVideo} className={style.button}>
-                {isVideoOff ? 'Turn On Camera' : 'Turn Off Camera'}
-              </button>
-            </>
-          )}
-          <button onClick={leaveRoom} className={style.leaveButton}>Leave Room</button>
+
+          <ControlPanel
+            role={role}
+            localVideoRef={localVideoRef}
+            peersRef={peersRef}
+            streamRef={streamRef}
+            socket={socket}
+            videoElementRef={videoElementRef}
+            isMicMuted={isMicMuted}
+            setIsMicMuted={setIsMicMuted}
+            isSharingScreen={isSharingScreen}
+            setIsSharingScreen={setIsSharingScreen}
+            isVideoOff={isVideoOff}
+            setIsVideoOff={setIsVideoOff}
+            stopScreenShare={stopScreenShare}
+            leaveRoomCallback={leaveRoomCallback}
+          />
         </div>
         {Object.entries(remoteStreams).map(([id, stream]) => {
           const participant = participants.find((p) => p.socketId === id);

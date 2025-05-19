@@ -267,19 +267,6 @@
   height: 120px;
   object-fit: cover;
 }
-.controlPanel {
-  position: fixed;
-  bottom: 0;
-  width: 100%;
-  padding: 12px 24px;
-  background-color: #1c1c1c;
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 12px;
-  z-index: 1000;
-  border-top: 1px solid #333;
-}
 
 .participant {
   padding: 8px;
