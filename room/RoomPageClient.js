@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import style from './RoomPage.module.css';
 import ChatBox from './ChatBox';
+import ControlPanel from './ControlPanel'
 
 import socket from '../utils/socket';
 
@@ -191,8 +192,8 @@ export default function RoomPage() {
       });
       socket.on('chat-history', (messages) => {
         console.log('📜 Chat history received:', messages);
-  setChatMessages((prev) => [...messages, ...prev]);
-});
+        setChatMessages((prev) => [...messages, ...prev]);
+      });
       socket.on('chat-permission-updated', ({ enabled }) => {
         setChatEnabled(enabled);
       });
@@ -231,7 +232,7 @@ export default function RoomPage() {
         'receive-answer',
         'receive-ice-candidate',
         'receive-chat',
-         'chat-history', // <== ✅ add this here
+        'chat-history', // <== ✅ add this here
         'chat-permission-updated',
         'user-disconnected',
         'screen-share-started',
@@ -242,7 +243,7 @@ export default function RoomPage() {
       peersRef.current.forEach((pc) => pc.close());
       peersRef.current.clear();
     };
-  }, [roomId, name, role, isRecording,]);
+  }, [roomId, name, role]);
 
   const sendMessage = () => {
     if (!message.trim()) return;
@@ -360,7 +361,7 @@ export default function RoomPage() {
       setIsVideoOff(false);
     }
   };
-  
+
 
 
   const stopScreenShare = async () => {
@@ -497,48 +498,6 @@ export default function RoomPage() {
   };
 
 
-  // const startRecording = () => {
-  //   if (!streamRef.current || role !== 'host') return;
-
-  //   try {
-  //     recordedChunksRef.current = []; // ✅ clear previous chunks
-
-  //     const recorder = new MediaRecorder(streamRef.current, { mimeType: 'video/webm' });
-
-  //     recorder.ondataavailable = (event) => {
-  //       if (event.data && event.data.size > 0) {
-  //         recordedChunksRef.current.push(event.data);
-  //       }
-  //     };
-
-  //     recorder.onstop = async () => {
-  //       if (recordedChunksRef.current.length === 0) return;
-
-  //       const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
-  //       const fileName = `recording-${roomId}-${Date.now()}.webm`;
-  //       recordedChunksRef.current = []; // ✅ ensure clean state
-
-  //       // ✅ Auto download
-  //       const downloadUrl = URL.createObjectURL(blob);
-  //       const a = document.createElement('a');
-  //       a.href = downloadUrl;
-  //       a.download = fileName;
-  //       a.click();
-  //       URL.revokeObjectURL(downloadUrl);
-
-  //       // ✅ Upload to backend
-  //       await uploadRecording(blob, fileName);
-  //     };
-
-  //     recorder.start();
-  //     setMediaRecorder(recorder);
-  //     setIsRecording(true);
-  //     console.log('🔴 Recording started');
-  //   } catch (err) {
-  //     console.error('❌ Failed to start recording:', err);
-  //   }
-  // };
-
   const startRecordingWithCanvas = async () => {
     if (role !== 'host') return;
 
@@ -624,19 +583,6 @@ export default function RoomPage() {
     console.log('🎥 Canvas recording started with mixed audio');
   };
 
-
-  // const stopRecording = () => {
-  //   if (mediaRecorder && role === 'host') {
-  //     try {
-  //       mediaRecorder.stop();
-  //       setIsRecording(false);
-  //       console.log('🛑 Recording stopped');
-  //     } catch (err) {
-  //       console.error('❌ Failed to stop recording:', err);
-  //     }
-  //   }
-  // };
-
   const stopCanvasRecording = () => {
     if (mediaRecorder) {
       mediaRecorder.stop();
@@ -656,22 +602,21 @@ export default function RoomPage() {
         <div className={style.videoBlock}>
           <h3>You</h3>
           <video ref={localVideoRef} autoPlay muted playsInline className={style.video} />
-          <button onClick={toggleOwnMic} className={style.button}>
-            {isMicMuted ? 'Unmute Mic' : 'Mute Mic'}
-          </button>
-          {role === 'host' && (
-            <>
-              {!isSharingScreen ? (
-                <button onClick={shareScreen} className={style.button}>Share Screen</button>
-              ) : (
-                <button onClick={stopScreenShare} className={style.button}>Stop Sharing</button>
-              )}
-              <button onClick={toggleOwnVideo} className={style.button}>
-                {isVideoOff ? 'Turn On Camera' : 'Turn Off Camera'}
-              </button>
-            </>
-          )}
-          <button onClick={leaveRoom} className={style.leaveButton}>Leave Room</button>
+          <ControlPanel
+            role={role}
+            isMicMuted={isMicMuted}
+            isVideoOff={isVideoOff}
+            isRecording={isRecording}
+            isSharingScreen={isSharingScreen}
+            toggleOwnMic={toggleOwnMic}
+            toggleOwnVideo={toggleOwnVideo}
+            shareScreen={shareScreen}
+            stopScreenShare={stopScreenShare}
+            leaveRoom={leaveRoom}
+            startRecordingWithCanvas={startRecordingWithCanvas}
+            stopCanvasRecording={stopCanvasRecording}
+            switchRecordingSource={switchRecordingSource}
+          />
         </div>
 
         {Object.entries(remoteStreams).map(([id, stream]) => {
@@ -700,94 +645,24 @@ export default function RoomPage() {
           </ul>
         </div>
       )}
-
-
-      {/* {role === 'host' && (
-  <div className={style.recordingControls}>
-    <canvas ref={canvasRef} width={1280} height={720} style={{ display: 'none' }} />
-    {!isRecording ? (
-      <button onClick={startRecording} className={style.button}>Start Recording</button>
-    ) : (
-      <button onClick={stopRecording} className={style.button}>Stop Recording</button>
-    )}
-  </div>
-)} */}
       <canvas
         ref={canvasRef}
         width={1280}
         height={720}
         style={{ display: 'none' }}
       />
-      {role === 'host' && (
-        <>
-          {!isRecording ? (
-            <button onClick={startRecordingWithCanvas} className={style.button}>
-              Start Smart Recording
-            </button>
-          ) : (
-            <>
-              <button onClick={stopCanvasRecording} className={style.button}>Stop Recording</button>
-              <button onClick={switchRecordingSource} className={style.button}>
-                Switch Source (Camera / Screen)
-              </button>
-            </>
-          )}
-        </>
-      )}
 
-      {/* {chatEnabled && (
-        <div className={style.chatBox}>
-          <h4>Chat</h4>
-          <div className={style.chatMessages}>
-            {chatMessages.map((msg, i) => (
-              <div key={i}>
-                <strong>{msg.from}:</strong> {msg.message}
-              </div>
-            ))}
-          </div>
-          <div className={style.chatInputArea}>
-            <select
-              value={chatTarget}
-              onChange={(e) => setChatTarget(e.target.value)}
-              className={style.chatTargetSelect}
-            >
-              <option value="all">All</option>
-              {participants.map((p) => (
-                <option key={p.socketId} value={p.socketId}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-            <input
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault(); // avoid form submission if any
-                  sendMessage();
-                }
-              }}
-              placeholder="Type a message"
-              className={style.chatInput}
-            />
-            <button onClick={sendMessage} className={style.sendButton}>
-              Send
-            </button>
-          </div>
-        </div>
-      )} */}
       <ChatBox
-  chatMessages={chatMessages}
-  setChatMessages={setChatMessages}
-  participants={participants}
-  chatEnabled={chatEnabled}
-  message={message}
-  setMessage={setMessage}
-  chatTarget={chatTarget}
-  setChatTarget={setChatTarget}
-  sendMessage={sendMessage}
-/>
-
+        chatMessages={chatMessages}
+        setChatMessages={setChatMessages}
+        participants={participants}
+        chatEnabled={chatEnabled}
+        message={message}
+        setMessage={setMessage}
+        chatTarget={chatTarget}
+        setChatTarget={setChatTarget}
+        sendMessage={sendMessage}
+      />
     </div>
   );
 }
