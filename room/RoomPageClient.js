@@ -6,7 +6,7 @@ import style from './RoomPage.module.css';
 import {
   Mic, MicOff, VideoOff, Video, ScreenShare,
   StopCircle, PhoneOff, MessageSquare, Users,
-  X, Maximize2, Minimize2
+  X, Maximize2, Minimize2, Volume2
 } from 'lucide-react';
 import socket from '../utils/socket';
 
@@ -64,18 +64,101 @@ export default function RoomPage() {
   const audioContextRef = useRef(null);
   const audioDestinationRef = useRef(null);
   const [screenSharerId, setScreenSharerId] = useState(null);
+  
+  // NEW: Add state for speaking participants
+  const [speakingParticipants, setSpeakingParticipants] = useState(new Set());
+  const audioAnalyzersRef = useRef(new Map());
+  const audioLevelThreshold = 0.05; // Threshold for detecting speech
+  const speakingDetectionInterval = useRef(null);
 
   // Detect screen size for responsive layout
   useEffect(() => {
     const handleResize = () => {
       setIsMobile(window.innerWidth < 768);
-      // ✅ Do NOT auto-open panels
     };
 
     handleResize();
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
+
+  // NEW: Function to detect speaking
+  const setupSpeakingDetection = (stream, participantId) => {
+    if (!stream || !participantId) return;
+    
+    try {
+      // Initialize audio context if not already done
+      if (!audioContextRef.current) {
+        audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+      }
+
+      // Stop any existing analyzer for this participant
+      if (audioAnalyzersRef.current.has(participantId)) {
+        const { analyzerNode, source, animationFrame } = audioAnalyzersRef.current.get(participantId);
+        if (animationFrame) cancelAnimationFrame(animationFrame);
+        if (source) source.disconnect();
+        audioAnalyzersRef.current.delete(participantId);
+      }
+
+      // Get audio tracks
+      const audioTrack = stream.getAudioTracks()[0];
+      if (!audioTrack) return;
+
+      // Create new audio stream with just the audio track
+      const audioStream = new MediaStream([audioTrack]);
+      
+      // Create audio source
+      const source = audioContextRef.current.createMediaStreamSource(audioStream);
+      
+      // Create analyzer
+      const analyzerNode = audioContextRef.current.createAnalyser();
+      analyzerNode.fftSize = 256;
+      analyzerNode.smoothingTimeConstant = 0.5;
+      const dataArray = new Uint8Array(analyzerNode.frequencyBinCount);
+      
+      // Connect nodes
+      source.connect(analyzerNode);
+      
+      // Function to detect audio level
+      const detectSpeaking = () => {
+        analyzerNode.getByteFrequencyData(dataArray);
+        
+        // Calculate average level
+        let sum = 0;
+        for (let i = 0; i < dataArray.length; i++) {
+          sum += dataArray[i];
+        }
+        const average = sum / dataArray.length / 255; // Normalize to 0-1
+        
+        // Update speaking state based on threshold
+        setSpeakingParticipants(prev => {
+          const newSet = new Set(prev);
+          if (average > audioLevelThreshold) {
+            newSet.add(participantId);
+          } else {
+            newSet.delete(participantId);
+          }
+          return newSet;
+        });
+        
+        // Continue detection loop
+        const animationFrame = requestAnimationFrame(detectSpeaking);
+        
+        // Update the ref with the new animation frame
+        audioAnalyzersRef.current.set(participantId, { 
+          analyzerNode, 
+          source,
+          animationFrame 
+        });
+      };
+      
+      // Start detection
+      detectSpeaking();
+      
+    } catch (err) {
+      console.error("Error setting up speaking detection:", err);
+    }
+  };
 
   // Re-use your existing WebRTC and socket code here
   useEffect(() => {
@@ -96,6 +179,10 @@ export default function RoomPage() {
         const stream = event.streams[0];
         console.log('📡 Received track from:', peerId, stream);
         setRemoteStreams((prev) => ({ ...prev, [peerId]: stream }));
+        
+        // NEW: Setup speaking detection for this remote stream
+        setupSpeakingDetection(stream, peerId);
+        
         const remoteAudioTrack = stream.getAudioTracks()[0];
         if (remoteAudioTrack) {
           if (audioContextRef.current && audioDestinationRef.current) {
@@ -138,6 +225,9 @@ export default function RoomPage() {
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
         }
+        
+        // NEW: Setup speaking detection for local stream
+        setupSpeakingDetection(stream, socket.id);
 
         // Turn off participant video by default
         if (role === 'participant') {
@@ -161,7 +251,7 @@ export default function RoomPage() {
 
             socket.emit('send-offer', { to: socketId, offer });
 
-            // ✅ Add participant to the list with name and role
+            // Add participant to the list with name and role
             setParticipants((prev) => {
               if (prev.find((p) => p.socketId === socketId)) return prev;
               return [...prev, { socketId, name, role }];
@@ -169,11 +259,10 @@ export default function RoomPage() {
           }
         });
 
-
         socket.on('user-connected', ({ socketId, name, role }) => {
           setParticipants((prev) => {
             if (prev.find((p) => p.socketId === socketId)) return prev;
-            return [...prev, { socketId, name, role }]; // ✅ Add role here
+            return [...prev, { socketId, name, role }];
           });
         });
 
@@ -216,6 +305,22 @@ export default function RoomPage() {
           const pc = peersRef.current.get(socketId);
           if (pc) pc.close();
           peersRef.current.delete(socketId);
+          
+          // NEW: Clean up audio analyzer for disconnected participant
+          if (audioAnalyzersRef.current.has(socketId)) {
+            const { source, animationFrame } = audioAnalyzersRef.current.get(socketId);
+            if (animationFrame) cancelAnimationFrame(animationFrame);
+            if (source) source.disconnect();
+            audioAnalyzersRef.current.delete(socketId);
+          }
+          
+          // Remove from speaking participants if present
+          setSpeakingParticipants(prev => {
+            const newSet = new Set(prev);
+            newSet.delete(socketId);
+            return newSet;
+          });
+          
           setRemoteStreams((prev) => {
             const updated = { ...prev };
             delete updated[socketId];
@@ -226,14 +331,13 @@ export default function RoomPage() {
 
         socket.on('screen-share-started', () => {
           const { userId, roomId } = socket.data || {};
-          setScreenSharerId(socketId);
+          setScreenSharerId(socket.id);
           socket.emit('screen-share-started', { socketId: socket.id });
           console.log(`📺 ${userId} started screen sharing in room ${roomId}`);
         });
 
         socket.on('screen-share-stopped', () => {
           const { userId, roomId } = socket.data || {};
-
           setScreenSharerId(null);
           socket.emit('screen-share-stopped');
           console.log(`🛑 ${userId} stopped screen sharing in room ${roomId}`);
@@ -246,6 +350,13 @@ export default function RoomPage() {
     start();
 
     return () => {
+      // NEW: Cleanup all audio analyzers
+      audioAnalyzersRef.current.forEach(({ source, animationFrame }) => {
+        if (animationFrame) cancelAnimationFrame(animationFrame);
+        if (source) source.disconnect();
+      });
+      audioAnalyzersRef.current.clear();
+      
       socket.disconnect();
       [
         'all-users',
@@ -271,8 +382,7 @@ export default function RoomPage() {
   const sendMessage = () => {
     if (!message.trim()) return;
 
-
-    // 👇 Emit to server for others
+    // Emit to server for others
     socket.emit('send-chat', {
       roomId,
       message: message.trim(),
@@ -434,8 +544,6 @@ export default function RoomPage() {
             )}
 
             {/* Remote videos */}
-
-            {/* Remote videos */}
             {role === 'participant' && (() => {
               const host = participants.find((p) => p.role === 'host');
               if (host && remoteStreams[host.socketId]) {
@@ -450,19 +558,6 @@ export default function RoomPage() {
               }
               return null;
             })()}
-
-            {/* {role === 'host' &&
-              Object.entries(remoteStreams).map(([id, stream]) => {
-                const participant = participants.find((p) => p.socketId === id);
-                return (
-                  <VideoBox
-                    key={id}
-                    stream={stream}
-                    name={participant?.name || 'Remote'}
-                    isCameraOff={participant?.isCameraOff ?? false}
-                  />
-                );
-              })} */}
           </div>
 
           {/* Main controls */}
@@ -502,7 +597,7 @@ export default function RoomPage() {
             )}
 
 
-            {/* ✅ New button to toggle chat */}
+            {/* New button to toggle chat */}
             <button
               className={`${style.iconButton} ${isChatOpen ? style.active : ''}`}
               onClick={() => {
@@ -532,7 +627,7 @@ export default function RoomPage() {
           </div>
         </div>
 
-        {/* Participants panel */}
+        {/* Participants panel - ENHANCED with speaking indicator */}
         {role === 'host' && (
           <div className={`${style.sidePanel} ${isParticipantsOpen ? style.open : ''}`}>
             <div className={style.panelHeader}>
@@ -546,14 +641,15 @@ export default function RoomPage() {
             <div className={style.panelBody}>
               <div className={style.participantsList}>
                 {participants.map((p) => (
-                  <div key={p.socketId} className={style.participantItem}>
+                  <div 
+                    key={p.socketId} 
+                    className={`${style.participantItem} ${speakingParticipants.has(p.socketId) ? style.speaking : ''}`}
+                  >
                     <div className={style.participantAvatar}>
-                      {p.name.charAt(0).toUpperCase()}
+                      {p.name.toUpperCase()}
                     </div>
                     <div className={style.participantInfo}>
-                      <div className={style.participantName}>
-                        {p.name} {p.socketId === socket.id ? '(You)' : ''}
-                      </div>
+                     
                       <div className={style.participantStatus}>
                         {p.isCameraOff ? 'Camera Off' : 'Camera On'}
                       </div>
@@ -593,8 +689,6 @@ export default function RoomPage() {
             />
           </div>
         )}
-
-
       </div>
     </div>
   );
