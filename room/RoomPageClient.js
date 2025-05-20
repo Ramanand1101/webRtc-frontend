@@ -64,7 +64,6 @@ export default function RoomPage() {
   const audioContextRef = useRef(null);
   const audioDestinationRef = useRef(null);
   const [screenSharerId, setScreenSharerId] = useState(null);
-  const peersMeta = useRef(new Map());
 
   // Detect screen size for responsive layout
   useEffect(() => {
@@ -96,11 +95,7 @@ export default function RoomPage() {
       pc.ontrack = (event) => {
         const stream = event.streams[0];
         console.log('📡 Received track from:', peerId, stream);
-        const role = peersMeta.current.get(peerId);
-        if (role === 'host') {
-          setRemoteStreams({ [peerId]: stream }); // overwrite only with host
-        }
-
+        setRemoteStreams((prev) => ({ ...prev, [peerId]: stream }));
         const remoteAudioTrack = stream.getAudioTracks()[0];
         if (
           remoteAudioTrack &&
@@ -149,15 +144,10 @@ export default function RoomPage() {
         }
 
         socket.emit('join-room', { roomId, userId: name, role });
-
         setParticipants([{ socketId: socket.id, name, role }]);
 
-
         socket.on('all-users', async (users) => {
-
-          console.log("fdsfds", users)
           for (const { socketId, name, role } of users) {
-            peersMeta.current.set(socketId, role); // ✅ store role
             const pc = createPeer(socketId);
             peersRef.current.set(socketId, pc);
 
@@ -176,7 +166,6 @@ export default function RoomPage() {
 
 
         socket.on('user-connected', ({ socketId, name, role }) => {
-          peersMeta.current.set(socketId, role); // ✅ store role
           setParticipants((prev) => {
             if (prev.find((p) => p.socketId === socketId)) return prev;
             return [...prev, { socketId, name, role }]; // ✅ Add role here
@@ -276,7 +265,6 @@ export default function RoomPage() {
   // Your chat logic
   const sendMessage = () => {
     if (!message.trim()) return;
-
 
 
     // 👇 Emit to server for others
@@ -425,20 +413,22 @@ export default function RoomPage() {
         <div className={style.videoSection} onClick={handleVideoAreaClick}>
           <div className={style.videoGrid}>
             {/* Local video */}
-           {role === 'host' && (
-  <div className={style.videoBlock}>
-    <video
-      ref={localVideoRef}
-      autoPlay
-      muted
-      playsInline
-      className={style.video}
-    />
-    <div className={style.participantName}>
-      {name} (You){isMicMuted ? ' 🔇' : ''}
-    </div>
-  </div>
-)}
+            {role === 'host' && (
+              <div className={style.videoBlock}>
+                <video
+                  ref={localVideoRef}
+                  autoPlay
+                  muted
+                  playsInline
+                  className={style.video}
+                />
+                <div className={style.participantName}>
+                  {name} (You){isMicMuted ? ' 🔇' : ''}
+                </div>
+              </div>
+            )}
+
+            {/* Remote videos */}
 
             {/* Remote videos */}
             {role === 'participant' && (() => {
@@ -456,7 +446,7 @@ export default function RoomPage() {
               return null;
             })()}
 
-            {/* {role === 'host' &&
+            {role === 'host' &&
               Object.entries(remoteStreams).map(([id, stream]) => {
                 const participant = participants.find((p) => p.socketId === id);
                 return (
@@ -467,8 +457,7 @@ export default function RoomPage() {
                     isCameraOff={participant?.isCameraOff ?? false}
                   />
                 );
-              })} */}
-
+              })}
           </div>
 
           {/* Main controls */}
