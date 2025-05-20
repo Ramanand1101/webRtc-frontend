@@ -1,6 +1,8 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useRef, useState, useEffect } from 'react';
+import { Camera, Monitor, StopCircle,Videotape} from 'lucide-react';
+import styles from './RecordingControls.module.css';
 
 export default function RecordingControls({
   role,
@@ -11,8 +13,10 @@ export default function RecordingControls({
   socket,
 }) {
   const [isRecording, setIsRecording] = useState(false);
-  const [currentSource, setCurrentSource] = useState('camera'); // 'camera' or 'screen'
+  const [currentSource, setCurrentSource] = useState('camera');
   const [mediaRecorder, setMediaRecorder] = useState(null);
+  const [recordingTime, setRecordingTime] = useState(0);
+  const [showTooltip, setShowTooltip] = useState(false);
 
   const videoElementRef = useRef(null);
   const canvasRef = useRef(null);
@@ -20,6 +24,28 @@ export default function RecordingControls({
   const recordedChunksRef = useRef([]);
   const audioContextRef = useRef(null);
   const audioDestinationRef = useRef(null);
+  const recordingTimerRef = useRef(null);
+
+  // Format seconds to MM:SS
+  const formatTime = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  // Recording timer effect
+  useEffect(() => {
+    if (isRecording) {
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingTime((prev) => prev + 1);
+      }, 1000);
+    } else {
+      clearInterval(recordingTimerRef.current);
+      setRecordingTime(0);
+    }
+
+    return () => clearInterval(recordingTimerRef.current);
+  }, [isRecording]);
 
   const uploadRecording = async (blob, filename) => {
     const formData = new FormData();
@@ -193,25 +219,50 @@ export default function RecordingControls({
     }
   };
 
-  // Provide a hidden canvas element for recording
   return (
-    <div>
+    <div className={styles.iconControlsContainer}>
       <canvas
         ref={canvasRef}
         width={1280}
         height={720}
         style={{ display: 'none' }}
       />
-      {!isRecording ? (
-        <button onClick={startRecordingWithCanvas}>Start Smart Recording</button>
-      ) : (
-        <>
-          <button onClick={stopCanvasRecording}>Stop Recording</button>
-          <button onClick={switchRecordingSource}>
-            Switch Source (Camera / Screen)
+      
+      {/* Icon-based controls */}
+      <div className={styles.iconControls}>
+        {!isRecording ? (
+          <button 
+            className={`${styles.iconButton} ${role !== 'host' ? styles.disabled : ''}`}
+            onClick={startRecordingWithCanvas}
+            disabled={role !== 'host'}
+            title={role !== 'host' ? 'Only host can record' : 'Start recording'}
+            onMouseEnter={() => setShowTooltip(true)}
+            onMouseLeave={() => setShowTooltip(false)}
+          >
+            <Videotape size={22} />
+            {showTooltip && <span className={styles.tooltip}>Start Recording</span>}
           </button>
-        </>
-      )}
+        ) : (
+          <>
+            <button 
+              className={`${styles.iconButton} ${styles.recording}`}
+              onClick={stopCanvasRecording}
+              title="Stop recording"
+            >
+              <StopCircle size={22} />
+              <span className={styles.recordingTime}>{formatTime(recordingTime)}</span>
+            </button>
+            
+            <button 
+              className={styles.iconButton}
+              onClick={switchRecordingSource}
+              title={`Switch to ${currentSource === 'camera' ? 'screen' : 'camera'}`}
+            >
+              {currentSource === 'camera' ? <Monitor size={22} /> : <Camera size={22} />}
+            </button>
+          </>
+        )}
+      </div>
     </div>
   );
 }

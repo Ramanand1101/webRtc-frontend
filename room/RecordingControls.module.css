@@ -1,0 +1,78 @@
+/* RecordingControls.module.css */
+
+.iconControls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.iconButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background-color: rgba(30, 30, 30, 0.7);
+  border: none;
+  color: white;
+  cursor: pointer;
+  position: relative;
+  transition: all 0.2s ease;
+}
+
+.iconButton:hover {
+  background-color: rgba(50, 50, 50, 0.9);
+  transform: scale(1.05);
+}
+
+.iconButton.recording {
+  background-color: rgba(220, 53, 69, 0.8);
+  animation: pulseRecording 2s infinite;
+}
+
+.iconButton.recording:hover {
+  background-color: rgba(220, 53, 69, 1);
+}
+
+.iconButton.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.recordingTime {
+  position: absolute;
+  bottom: -20px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.6);
+  padding: 2px 6px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+
+.tooltip {
+  position: absolute;
+  top: -30px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.7);
+  color: white;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+@keyframes pulseRecording {
+  0% {
+    box-shadow: 0 0 0 0 rgba(220, 53, 69, 0.7);
+  }
+  70% {
+    box-shadow: 0 0 0 6px rgba(220, 53, 69, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(220, 53, 69, 0);
+  }
+}

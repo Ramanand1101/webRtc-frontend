@@ -5,7 +5,6 @@ import style from './RoomPage.module.css';
 
 export default function ChatBox({
   chatMessages,
-  //setChatMessages,
   participants,
   chatEnabled,
   message,
@@ -26,7 +25,6 @@ export default function ChatBox({
 
   return (
     <div className={style.chatBox}>
-      <h4>Chat</h4>
       <div className={style.chatMessages}>
         {chatMessages.map((msg, i) => (
           <div key={i}>
