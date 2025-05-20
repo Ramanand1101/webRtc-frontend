@@ -97,15 +97,20 @@ export default function RoomPage() {
         console.log('📡 Received track from:', peerId, stream);
         setRemoteStreams((prev) => ({ ...prev, [peerId]: stream }));
         const remoteAudioTrack = stream.getAudioTracks()[0];
-        if (
-          remoteAudioTrack &&
-          audioContextRef.current &&
-          audioDestinationRef.current
-        ) {
-          const remoteStreamForContext = new MediaStream([remoteAudioTrack]);
-          const remoteSource = audioContextRef.current.createMediaStreamSource(remoteStreamForContext);
-          remoteSource.connect(audioDestinationRef.current);
-          console.log('🎧 New participant audio added to mixer (ontrack)');
+        if (remoteAudioTrack) {
+          if (audioContextRef.current && audioDestinationRef.current) {
+            const remoteStreamForContext = new MediaStream([remoteAudioTrack]);
+            const remoteSource = audioContextRef.current.createMediaStreamSource(remoteStreamForContext);
+            remoteSource.connect(audioDestinationRef.current);
+            console.log('🎧 New participant audio added to mixer (ontrack)');
+          } else {
+            // Fallback for participants: play audio directly
+            const audio = new Audio();
+            audio.srcObject = new MediaStream([remoteAudioTrack]);
+            audio.autoplay = true;
+            audio.play().catch((e) => console.warn('🔇 Audio playback failed:', e));
+            console.log('🔊 Playing participant audio using fallback audio element');
+          }
         }
       };
 
@@ -446,7 +451,7 @@ export default function RoomPage() {
               return null;
             })()}
 
-            {role === 'host' &&
+            {/* {role === 'host' &&
               Object.entries(remoteStreams).map(([id, stream]) => {
                 const participant = participants.find((p) => p.socketId === id);
                 return (
@@ -457,7 +462,7 @@ export default function RoomPage() {
                     isCameraOff={participant?.isCameraOff ?? false}
                   />
                 );
-              })}
+              })} */}
           </div>
 
           {/* Main controls */}

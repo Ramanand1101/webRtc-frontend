@@ -87,7 +87,6 @@
 }
 .video {
   width: 100%;
-  border: 2px solid black;
   height: auto;
   object-fit: cover;
   border-radius: 8px;
