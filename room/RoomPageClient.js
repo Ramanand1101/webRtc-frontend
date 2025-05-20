@@ -7,6 +7,7 @@ import ChatBox from './ChatBox';
 
 import ControlPanel from './ControlPanel';
 import socket from '../utils/socket';
+import RecordingControls from './RecordingControls';
 
 function VideoBox({ stream, name }) {
   const videoRef = useRef(null);
@@ -41,9 +42,7 @@ export default function RoomPage() {
   const videoElementRef = useRef(null); // dynamically switch this source
   const [remoteStreams, setRemoteStreams] = useState({});
   const [participants, setParticipants] = useState([]);
-  const [mediaRecorder, setMediaRecorder] = useState(null);
-  const recordedChunksRef = useRef([]);
-  const [isRecording, setIsRecording] = useState(false);
+
   const [chatMessages, setChatMessages] = useState([]);
   const [chatEnabled, setChatEnabled] = useState(false);
   const [message, setMessage] = useState('');
@@ -56,8 +55,6 @@ export default function RoomPage() {
   const audioContextRef = useRef(null);
   const audioDestinationRef = useRef(null);
 
-  const drawingIntervalRef = useRef(null);
-  const [currentSource, setCurrentSource] = useState('screen'); // or 'camera'
 
   useEffect(() => {
     if (!roomId || !name || !role) return;
@@ -116,18 +113,28 @@ export default function RoomPage() {
 
     const start = async () => {
 
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+     const stream = await navigator.mediaDevices.getUserMedia({
+  video: role === 'host',
+  audio: true,
+});
 
-      streamRef.current = stream;
-      localVideoRef.current.srcObject = stream;
+streamRef.current = stream;
+
+// ✅ Only set srcObject if localVideoRef exists (i.e., user is host)
+if (role === 'host' && localVideoRef.current) {
+  localVideoRef.current.srcObject = stream;
+}
 
 
       turnOffParticipantVideo();
+      
       socket.emit('join-room', { roomId, userId: name, role });
       console.log('📡 join-room emitted:', { roomId, userId: name, role });
-      setParticipants([{ socketId: socket.id, name }]);
+      setParticipants([{ socketId: socket.id, name, role }]);
 
       socket.on('all-users', async (users) => {
+        console.log('👥 All users:', users);
+          setParticipants(users); // users must be [{ socketId, name, role }]
         for (const { socketId } of users) {
           const pc = createPeer(socketId);
           peersRef.current.set(socketId, pc);
@@ -235,61 +242,17 @@ export default function RoomPage() {
     setMessage('');
   };
 
-  const switchRecordingSource = async () => {
-    if (!videoElementRef.current) return;
+function AudioBox({ stream }) {
+  const audioRef = useRef(null);
 
-    const newSource = currentSource === 'screen' ? 'camera' : 'screen';
-
-    try {
-      let newStream;
-      if (newSource === 'camera') {
-        newStream = await navigator.mediaDevices.getUserMedia({ video: true });
-      } else {
-        newStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-      }
-
-      const newTrack = newStream.getVideoTracks()[0];
-
-      // ✅ For recording (canvas)
-      videoElementRef.current.srcObject = new MediaStream([newTrack]);
-      videoElementRef.current.onloadedmetadata = async () => {
-        try {
-          await videoElementRef.current.play();
-        } catch (err) {
-          console.error('🔁 Play failed after source switch:', err);
-        }
-      };
-
-      // ✅ For WebRTC (broadcast to others)
-      const currentAudioTracks = streamRef.current?.getAudioTracks() || [];
-      const newCombinedStream = new MediaStream([...currentAudioTracks, newTrack]);
-
-      streamRef.current = newCombinedStream;
-      localVideoRef.current.srcObject = newCombinedStream;
-
-      // ✅ Update peer video tracks
-      peersRef.current.forEach((pc) => {
-        const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
-        if (sender) sender.replaceTrack(newTrack);
-      });
-
-      // ✅ Emit socket event if screen sharing
-      if (newSource === 'screen') {
-        socket.emit('screen-share-started');
-        setIsSharingScreen(true);
-      } else {
-        socket.emit('screen-share-stopped');
-        setIsSharingScreen(false);
-      }
-
-      setCurrentSource(newSource);
-      console.log(`🔁 Switched to ${newSource} — shared to peers & canvas`);
-
-    } catch (err) {
-      console.error('❌ Error switching source and sharing:', err);
+  useEffect(() => {
+    if (audioRef.current && stream) {
+      audioRef.current.srcObject = stream;
     }
-  };
+  }, [stream]);
 
+  return <audio ref={audioRef} autoPlay playsInline />;
+}
   const turnOffParticipantVideo = () => {
     if (role === 'participant') {
       const videoTrack = streamRef.current?.getVideoTracks?.()[0];
@@ -304,7 +267,6 @@ export default function RoomPage() {
   const stopScreenShare = async () => {
     try {
       // 1. Stop the screen track (from canvas video element)
-
       const screenTrack = videoElementRef.current?.srcObject?.getVideoTracks?.()[0];
       if (screenTrack && screenTrack.readyState === 'live') {
         screenTrack.stop(); // triggers onended
@@ -356,10 +318,7 @@ export default function RoomPage() {
       console.error('❌ Error while stopping screen share and restoring camera:', err);
     }
   };
-
-
-
- const leaveRoomCallback = () => {
+  const leaveRoomCallback = () => {
     setHasLeft(true);
     streamRef.current?.getTracks().forEach((track) => track.stop());
     peersRef.current.forEach((pc) => pc.close());
@@ -370,161 +329,55 @@ export default function RoomPage() {
 
     window.location.href = '/';
   };
-  const uploadRecording = async (blob, filename) => {
-    const formData = new FormData();
-    formData.append('video', blob, filename);
-
-    try {
-      const res = await fetch('http://localhost:5000/upload', {
-        //const res = await fetch('https://webrtc-backend-goxe.onrender.com/upload', {
-        method: 'POST',
-        body: formData,
-      });
-
-      const data = await res.json();
-
-      if (res.ok) {
-        console.log('✅ Uploaded to backend:', data.fileUrl);
-        alert('Recording uploaded & saved:\n' + data.fileUrl);
-      } else {
-        console.error('❌ Upload failed:', data.message);
-      }
-    } catch (err) {
-      console.error('❌ Error uploading recording:', err);
-    }
-  };
-  const startRecordingWithCanvas = async () => {
-    if (role !== 'host') return;
-
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
-
-    // 1. Get host mic and video (camera by default)
-    const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const camStream = await navigator.mediaDevices.getUserMedia({ video: true });
-    const camTrack = camStream.getVideoTracks()[0];
-
-    // 2. Setup video element for canvas drawing
-    videoElementRef.current = document.createElement('video');
-    videoElementRef.current.muted = true;
-    videoElementRef.current.srcObject = new MediaStream([camTrack]);
-    await videoElementRef.current.play();
-
-    // 3. Draw video on canvas
-    drawingIntervalRef.current = setInterval(() => {
-      if (videoElementRef.current?.videoWidth > 0) {
-        ctx.drawImage(videoElementRef.current, 0, 0, canvas.width, canvas.height);
-      }
-    }, 1000 / 30);
-
-    // 4. Create canvas stream
-    const canvasStream = canvas.captureStream(30);
-
-    // 5. MIX AUDIO using Web Audio API
-    const audioContext = new AudioContext();
-    const destination = audioContext.createMediaStreamDestination();
-
-    // Save references for dynamic updates
-    audioContextRef.current = audioContext;
-    audioDestinationRef.current = destination;
-
-    // Add host mic
-    const hostSource = audioContext.createMediaStreamSource(micStream);
-    hostSource.connect(destination);
-
-    // Add current participants' audio
-    Object.values(remoteStreams).forEach(remoteStream => {
-      const remoteAudioTrack = remoteStream.getAudioTracks()[0];
-      if (remoteAudioTrack) {
-        const remoteStreamForContext = new MediaStream([remoteAudioTrack]);
-        const remoteSource = audioContext.createMediaStreamSource(remoteStreamForContext);
-        remoteSource.connect(destination);
-      }
-    });
-
-    // Add all audio tracks to canvas stream
-    destination.stream.getAudioTracks().forEach(track => {
-      canvasStream.addTrack(track);
-    });
-
-    // 6. Start recording
-    const recorder = new MediaRecorder(canvasStream, { mimeType: 'video/webm' });
-    recordedChunksRef.current = [];
-
-    recorder.ondataavailable = (event) => {
-      if (event.data.size > 0) recordedChunksRef.current.push(event.data);
-    };
-
-    recorder.onstop = async () => {
-      clearInterval(drawingIntervalRef.current);
-
-      const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
-      const fileName = `merged-recording-${Date.now()}.webm`;
-
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = fileName;
-      a.click();
-      URL.revokeObjectURL(url);
-
-      await uploadRecording(blob, fileName);
-    };
-
-    recorder.start();
-    setMediaRecorder(recorder);
-    setIsRecording(true);
-    setCurrentSource('camera');
-    console.log('🎥 Canvas recording started with mixed audio');
-  };
-
-  const stopCanvasRecording = () => {
-    if (mediaRecorder) {
-      mediaRecorder.stop();
-      setIsRecording(false);
-      clearInterval(drawingIntervalRef.current);
-      console.log('🛑 Canvas-based recording stopped');
-    }
-  };
-
   return (
     <div className={style.container}>
       <h2 className={style.heading}>Room: {roomId}</h2>
       <div className={style.videoGrid}>
-        <div className={style.videoBlock}>
-          <h3>You</h3>
-          <video ref={localVideoRef} autoPlay muted playsInline className={style.video} />
+  {role === 'host' && (
+    <div className={style.videoBlock}>
+      <h3>You</h3>
+      <video
+        ref={localVideoRef}
+        autoPlay
+        muted
+        playsInline
+        className={style.video}
+      />
+      <ControlPanel
+        role={role}
+        localVideoRef={localVideoRef}
+        peersRef={peersRef}
+        streamRef={streamRef}
+        socket={socket}
+        videoElementRef={videoElementRef}
+        isMicMuted={isMicMuted}
+        setIsMicMuted={setIsMicMuted}
+        isSharingScreen={isSharingScreen}
+        setIsSharingScreen={setIsSharingScreen}
+        isVideoOff={isVideoOff}
+        setIsVideoOff={setIsVideoOff}
+        stopScreenShare={stopScreenShare}
+        leaveRoomCallback={leaveRoomCallback}
+      />
+    </div>
+  )}
 
-          <ControlPanel
-            role={role}
-            localVideoRef={localVideoRef}
-            peersRef={peersRef}
-            streamRef={streamRef}
-            socket={socket}
-            videoElementRef={videoElementRef}
-            isMicMuted={isMicMuted}
-            setIsMicMuted={setIsMicMuted}
-            isSharingScreen={isSharingScreen}
-            setIsSharingScreen={setIsSharingScreen}
-            isVideoOff={isVideoOff}
-            setIsVideoOff={setIsVideoOff}
-            stopScreenShare={stopScreenShare}
-            leaveRoomCallback={leaveRoomCallback}
-          />
-        </div>
-        {Object.entries(remoteStreams).map(([id, stream]) => {
-          const participant = participants.find((p) => p.socketId === id);
-          console.log("userside", stream)
-          return (
-            <VideoBox
-              key={id}
-              stream={stream}
-              name={participant?.name || 'Remote'}
-              isCameraOff={participant?.isCameraOff ?? false}
-            />
-          );
-        })}
-      </div>
+  {/* Show host's video to everyone */}
+  {Object.entries(remoteStreams).map(([id, stream]) => {
+    const participant = participants.find((p) => p.socketId === id);
+   {
+      return (
+        <VideoBox
+          key={id}
+          stream={stream}
+          name={participant?.name || 'Host'}
+          isCameraOff={false}
+        />
+      );
+    }
+     return <AudioBox key={id} stream={stream} />;
+  })}
+</div>
       {role === 'host' && (
         <div className={style.participantList}>
           <h3>Participants ({participants.length})</h3>
@@ -544,20 +397,14 @@ export default function RoomPage() {
         style={{ display: 'none' }}
       />
       {role === 'host' && (
-        <>
-          {!isRecording ? (
-            <button onClick={startRecordingWithCanvas} className={style.button}>
-              Start Smart Recording
-            </button>
-          ) : (
-            <>
-              <button onClick={stopCanvasRecording} className={style.button}>Stop Recording</button>
-              <button onClick={switchRecordingSource} className={style.button}>
-                Switch Source (Camera / Screen)
-              </button>
-            </>
-          )}
-        </>
+        <RecordingControls
+          role={role}
+          localVideoRef={localVideoRef}
+          streamRef={streamRef}
+          peersRef={peersRef}
+          remoteStreams={remoteStreams}
+          socket={socket}
+        />
       )}
       <ChatBox
         chatMessages={chatMessages}
