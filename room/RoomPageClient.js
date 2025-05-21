@@ -233,7 +233,7 @@ export default function RoomPage() {
         if (role === 'participant') {
           const videoTrack = stream.getVideoTracks()[0];
           if (videoTrack) {
-            videoTrack.enabled = false;
+            videoTrack.stop(); // stops the track completely
             setIsVideoOff(true);
           }
         }
@@ -647,12 +647,6 @@ export default function RoomPage() {
                   >
                     <div className={style.participantAvatar}>
                       {p.name.toUpperCase()}
-                    </div>
-                    <div className={style.participantInfo}>
-                     
-                      <div className={style.participantStatus}>
-                        {p.isCameraOff ? 'Camera Off' : 'Camera On'}
-                      </div>
                     </div>
                   </div>
                 ))}
