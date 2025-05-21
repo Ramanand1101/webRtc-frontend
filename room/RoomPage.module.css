@@ -34,6 +34,7 @@
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
   gap: 1rem;
   padding: 1rem;
+
   overflow: hidden; /* ✅ No scrollbars */
   flex: 1;
   place-items: center; /* center single stream */
@@ -76,7 +77,6 @@
 
 .videoBlock {
   position: relative;
-  background-color: #000;
   border-radius: 0.5rem;
   width: 100%;
   aspect-ratio: 16 / 9;
@@ -89,7 +89,7 @@
   width: 100%;
   height: 100%;
   object-fit: contain;
-  background-color: black;
+
 }
 .participantName {
   position: absolute;
