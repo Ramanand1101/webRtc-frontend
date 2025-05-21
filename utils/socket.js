@@ -7,7 +7,7 @@ const getSocket = () => {
     //socket = io("http://localhost:5000", {
     //socket = io("https://webrtc-backend-goxe.onrender.com/", {
  
-     socket = io("https://meet.lcmgo.com:5000", {
+     socket = io("https://meet.lcmgo.com/", {
       autoConnect: false,
       reconnectionDelayMax: 10000,
       transports: ["websocket"],
