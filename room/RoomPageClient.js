@@ -612,7 +612,7 @@ export default function RoomPage() {
             </button>
 
             {/* Recording controls for host */}
-            {role === 'host' && (
+            {/* {role === 'host' && (
               <div className={style.recordingControlsContainer}>
                 <RecordingControls
                   role={role}
@@ -623,7 +623,7 @@ export default function RoomPage() {
                   socket={socket}
                 />
               </div>
-            )}
+            )} */}
           </div>
         </div>
 

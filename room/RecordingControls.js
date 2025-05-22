@@ -1,5 +1,4 @@
 'use client';
-
 import { useRef, useState, useEffect } from 'react';
 import { Camera, Monitor, StopCircle,Videotape} from 'lucide-react';
 import styles from './RecordingControls.module.css';
@@ -11,13 +10,12 @@ export default function RecordingControls({
   peersRef,
   remoteStreams,
   socket,
-}) {
+}){
   const [isRecording, setIsRecording] = useState(false);
   const [currentSource, setCurrentSource] = useState('camera');
   const [mediaRecorder, setMediaRecorder] = useState(null);
   const [recordingTime, setRecordingTime] = useState(0);
   const [showTooltip, setShowTooltip] = useState(false);
-
   const videoElementRef = useRef(null);
   const canvasRef = useRef(null);
   const drawingIntervalRef = useRef(null);
@@ -25,14 +23,12 @@ export default function RecordingControls({
   const audioContextRef = useRef(null);
   const audioDestinationRef = useRef(null);
   const recordingTimerRef = useRef(null);
-
   // Format seconds to MM:SS
   const formatTime = (seconds) => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
-
   // Recording timer effect
   useEffect(() => {
     if (isRecording) {
@@ -78,7 +74,6 @@ export default function RecordingControls({
       return;
     }
     const ctx = canvas.getContext('2d');
-
     // Get host mic and video (camera by default)
     const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     const camStream = await navigator.mediaDevices.getUserMedia({ video: true });
@@ -266,3 +261,4 @@ export default function RecordingControls({
     </div>
   );
 }
+
