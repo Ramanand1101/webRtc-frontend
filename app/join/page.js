@@ -1,17 +1,3 @@
-// export const dynamic = 'force-dynamic';
-
-// import { Suspense } from 'react';
-// import RoomPageClient from '../../room/RoomPageClient';
-
-// export default function RoomPage() {
-//   return (
-//     <Suspense fallback={<div>Loading Room...</div>}>
-//       <RoomPageClient />
-//     </Suspense>
-//   );
-// }
-
-
 "use client";
 
 import { useState, useRef, useEffect } from "react";
